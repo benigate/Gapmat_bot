@@ -2,43 +2,69 @@
 import os
 import math
 import logging
-import psycopg2
-from flask import Flask, request
+from contextlib import contextmanager
+
 import telebot
 from telebot import types
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from flask import Flask, request
 
-logging.basicConfig(level=logging.INFO)
+
+# =========================
+# تنظیمات اولیه
+# =========================
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
-WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-PORT = int(os.environ.get("PORT", 10000))
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 registration = {}
-waiting_location = set()
 
 
+# =========================
+# اتصال دیتابیس
+# =========================
+
+@contextmanager
 def get_db():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        cursor_factory=RealDictCursor,
+        sslmode="require"
+    )
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     telegram_id BIGINT PRIMARY KEY,
                     nickname TEXT,
                     age INTEGER,
-                    city TEXT,
-                    province TEXT,
                     gender TEXT,
-                    photo_file_id TEXT,
-                    bio TEXT,
+                    city TEXT,
+                    latitude DOUBLE PRECISION,
+                    longitude DOUBLE PRECISION,
+                    location_visible BOOLEAN DEFAULT FALSE,
+                    profile_visible BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -59,19 +85,21 @@ def init_db():
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS profile_visible BOOLEAN DEFAULT TRUE
             """)
-
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id BIGSERIAL PRIMARY KEY,
-                    telegram_id BIGINT NOT NULL,
-                    chat_id BIGINT,
-                    message_id BIGINT,
-                    content_type TEXT,
-                    message_text TEXT,
-                    file_id TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (chat_id, message_id)
-                )
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS nickname TEXT
+            """)
+            cur.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS age INTEGER
+            """)
+            cur.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS gender TEXT
+            """)
+            cur.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS city TEXT
             """)
 
             cur.execute("""
@@ -85,42 +113,44 @@ def init_db():
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS reports (
-                    id BIGSERIAL PRIMARY KEY,
+                    id SERIAL PRIMARY KEY,
                     reporter_id BIGINT NOT NULL,
                     reported_id BIGINT NOT NULL,
                     reason TEXT,
-                    status TEXT DEFAULT 'new',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS activity_logs (
+                    id SERIAL PRIMARY KEY,
+                    telegram_id BIGINT,
+                    activity TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
 
-def save_message(message):
+def log_activity(user_id, activity):
     try:
-        text = message.text or message.caption or ""
-        file_id = None
-
-        if message.photo:
-            file_id = message.photo[-1].file_id
-
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO messages
-                    (telegram_id, chat_id, message_id,
-                     content_type, message_text, file_id)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (chat_id, message_id) DO NOTHING
-                """, (
-                    message.from_user.id,
-                    message.chat.id,
-                    message.message_id,
-                    message.content_type,
-                    text,
-                    file_id
-                ))
+                    INSERT INTO activity_logs (telegram_id, activity)
+                    VALUES (%s, %s)
+                """, (user_id, activity))
     except Exception:
-        app.logger.exception("Message save failed")
+        logger.exception("Activity logging failed")
+
+
+def get_user(user_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM users
+                WHERE telegram_id = %s
+            """, (user_id,))
+            return cur.fetchone()
 
 
 def save_profile(user_id, profile):
@@ -128,865 +158,473 @@ def save_profile(user_id, profile):
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO users
-                (telegram_id, nickname, age, city, province,
-                 gender, photo_file_id, bio,
-                 latitude, longitude, location_visible,
-                 profile_visible)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, TRUE)
-                ON CONFLICT (telegram_id) DO UPDATE SET
+                (telegram_id, nickname, age, gender, city,
+                 latitude, longitude, location_visible, profile_visible)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
                     nickname = EXCLUDED.nickname,
                     age = EXCLUDED.age,
-                    city = EXCLUDED.city,
-                    province = EXCLUDED.province,
                     gender = EXCLUDED.gender,
-                    photo_file_id = EXCLUDED.photo_file_id,
-                    bio = EXCLUDED.bio,
-                    latitude = COALESCE(
-                        EXCLUDED.latitude, users.latitude
-                    ),
-                    longitude = COALESCE(
-                        EXCLUDED.longitude, users.longitude
-                    ),
-                    location_visible = CASE
-                        WHEN EXCLUDED.latitude IS NOT NULL
-                        THEN TRUE
-                        ELSE users.location_visible
-                    END
+                    city = EXCLUDED.city,
+                    latitude = EXCLUDED.latitude,
+                    longitude = EXCLUDED.longitude,
+                    location_visible = EXCLUDED.location_visible
             """, (
                 user_id,
-                profile["nickname"],
-                profile["age"],
-                profile["city"],
-                profile["province"],
-                profile["gender"],
-                profile["photo"],
-                profile["bio"],
+                profile.get("nickname"),
+                profile.get("age"),
+                profile.get("gender"),
+                profile.get("city"),
                 profile.get("latitude"),
                 profile.get("longitude"),
                 profile.get("location_visible", False)
             ))
 
 
+# =========================
+# صفحه اصلی و ابزارها
+# =========================
+
 def main_keyboard():
-    keyboard = types.ReplyKeyboardMarkup(
-        resize_keyboard=True
-    )
-    keyboard.row("/nearby", "/location")
-    keyboard.row("/hide_location", "/show_location")
-    keyboard.row("/hide_profile", "/show_profile")
-    keyboard.row("/privacy", "/delete_account")
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row("🔎 افراد نزدیک", "👤 پروفایل من")
+    keyboard.row("📍 ارسال موقعیت", "🔒 حریم خصوصی")
+    keyboard.row("🚫 بلاک کاربر", "⚠️ گزارش کاربر")
+    keyboard.row("🗑 حذف حساب", "❌ لغو")
     return keyboard
 
 
-def finish_registration(user_id, chat_id, profile):
+def privacy_keyboard():
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "مخفی کردن پروفایل",
+            callback_data="hide_profile"
+        )
+    )
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "نمایش پروفایل",
+            callback_data="show_profile"
+        )
+    )
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "مخفی کردن موقعیت",
+            callback_data="hide_location"
+        )
+    )
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "نمایش موقعیت",
+            callback_data="show_location"
+        )
+    )
+    return keyboard
+
+
+def finish_registration(message):
+    user_id = message.from_user.id
+    profile = registration.get(user_id, {}).get("profile", {})
+
     try:
         save_profile(user_id, profile)
-    except Exception:
-        app.logger.exception("Profile save failed")
+        registration.pop(user_id, None)
+
         bot.send_message(
-            chat_id,
-            "❌ ذخیره پروفایل ناموفق بود. دوباره تلاش کن."
+            message.chat.id,
+            "✅ پروفایلت با موفقیت ذخیره شد!\n"
+            "به GapMate خوش اومدی 🌱",
+            reply_markup=main_keyboard()
         )
-        return
+        log_activity(user_id, "registration_completed")
 
-    registration.pop(user_id, None)
-
-    bot.send_message(
-        chat_id,
-        "🎉 پروفایلت ذخیره شد!\n\n"
-        "برای پیدا کردن افراد نزدیک از /nearby استفاده کن.\n"
-        "برای مدیریت حریم خصوصی /privacy رو بزن.",
-        reply_markup=main_keyboard()
-    )
+    except Exception:
+        logger.exception("Registration save failed")
+        bot.send_message(
+            message.chat.id,
+            "❌ ذخیره پروفایل انجام نشد. لطفاً دوباره تلاش کن."
+        )
 
 
-def is_blocked(first_id, second_id):
+def is_blocked(user1, user2):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT EXISTS (
-                    SELECT 1 FROM blocks
-                    WHERE (blocker_id = %s AND blocked_id = %s)
-                       OR (blocker_id = %s AND blocked_id = %s)
-                )
-            """, (first_id, second_id, second_id, first_id))
-            return cur.fetchone()[0]
+                SELECT 1 FROM blocks
+                WHERE (blocker_id = %s AND blocked_id = %s)
+                   OR (blocker_id = %s AND blocked_id = %s)
+                LIMIT 1
+            """, (user1, user2, user2, user1))
+            return cur.fetchone() is not None
 
 
-try:
-    init_db()
-    logging.info("Database tables are ready.")
-except Exception:
-    logging.exception("Database initialization failed")
-    raise
-
+# =========================
+# شروع و ثبت نام
+# =========================
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    save_message(message)
+    user_id = message.from_user.id
+    log_activity(user_id, "start")
 
-    registration[message.from_user.id] = {
-        "step": "nickname",
-        "profile": {}
-    }
+    try:
+        user = get_user(user_id)
 
-    bot.send_message(
-        message.chat.id,
-        "سلام! به GapMate خوش اومدی 🌱\n"
-        "برای ساخت پروفایل، یک نام مستعار وارد کن:"
-    )
+        if user and user.get("nickname"):
+            bot.send_message(
+                message.chat.id,
+                f"سلام {user['nickname']}! خوش برگشتی 🌱\n"
+                "پروفایلت از قبل ذخیره شده.",
+                reply_markup=main_keyboard()
+            )
+            return
+
+        registration[user_id] = {
+            "step": "nickname",
+            "profile": {}
+        }
+
+        bot.send_message(
+            message.chat.id,
+            "سلام! به GapMate خوش اومدی 🌱\n"
+            "برای ساخت پروفایل، یک نام مستعار وارد کن:"
+        )
+
+    except Exception:
+        logger.exception("Start command failed")
+        bot.send_message(
+            message.chat.id,
+            "❌ فعلاً اتصال به دیتابیس مشکل داره. دوباره تلاش کن."
+        )
 
 
 @bot.message_handler(commands=["cancel"])
 def cancel(message):
-    save_message(message)
     registration.pop(message.from_user.id, None)
-    waiting_location.discard(message.from_user.id)
-
     bot.send_message(
         message.chat.id,
-        "عملیات لغو شد. برای شروع دوباره /start رو بزن."
+        "عملیات لغو شد.",
+        reply_markup=main_keyboard()
     )
 
+
+# =========================
+# بررسی دیتابیس
+# =========================
 
 @bot.message_handler(commands=["dbcheck"])
 def dbcheck(message):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM users")
-                users_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) AS total FROM users")
+                users_count = cur.fetchone()["total"]
 
-                cur.execute("SELECT COUNT(*) FROM messages")
-                messages_count = cur.fetchone()[0]
-
-                cur.execute("SELECT COUNT(*) FROM reports")
-                reports_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) AS total FROM activity_logs")
+                logs_count = cur.fetchone()["total"]
 
         bot.send_message(
             message.chat.id,
             "✅ دیتابیس متصل است.\n"
-            f"پروفایل‌ها: {users_count}\n"
-            f"پیام‌های ذخیره‌شده: {messages_count}\n"
-            f"گزارش‌ها: {reports_count}"
+            f"تعداد پروفایل‌ها: {users_count}\n"
+            f"تعداد فعالیت‌های ثبت‌شده: {logs_count}"
         )
+
     except Exception:
-        app.logger.exception("Database check failed")
-        bot.send_message(message.chat.id, "❌ خطا در دیتابیس.")
+        logger.exception("Database check failed")
+        bot.send_message(message.chat.id, "❌ اتصال دیتابیس ناموفق بود.")
 
 
-@bot.message_handler(commands=["privacy"])
-def privacy(message):
-    bot.send_message(
-        message.chat.id,
-        "🔐 تنظیمات حریم خصوصی GapMate\n\n"
-        "/hide_location - مخفی‌کردن لوکیشن\n"
-        "/show_location - فعال‌کردن نمایش در جستجوی نزدیک‌ها\n"
-        "/hide_profile - مخفی‌کردن پروفایل\n"
-        "/show_profile - نمایش پروفایل\n"
-        "/delete_location - حذف مختصات ذخیره‌شده\n"
-        "/delete_account - حذف حساب و اطلاعات شخصی\n\n"
-        "لوکیشن دقیق به کاربران دیگر نمایش داده نمی‌شود."
-    )
+# =========================
+# ثبت نام مرحله به مرحله
+# =========================
 
-
-@bot.message_handler(commands=["location"])
-def ask_location(message):
+@bot.message_handler(content_types=["text"])
+def handle_text(message):
     user_id = message.from_user.id
+    text = (message.text or "").strip()
 
-    waiting_location.add(user_id)
+    if text.startswith("/"):
+        return
 
-    keyboard = types.ReplyKeyboardMarkup(
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    keyboard.add(types.KeyboardButton(
-        "📍 ارسال موقعیت مکانی",
-        request_location=True
-    ))
-    keyboard.add("لغو")
-
-    bot.send_message(
-        message.chat.id,
-        "اگر مایل هستی افراد نزدیکت تو رو پیدا کنند، "
-        "موقعیت مکانی‌ات رو ارسال کن.\n\n"
-        "مختصات دقیق فقط برای محاسبه فاصله استفاده می‌شه "
-        "و به دیگران نمایش داده نمی‌شه.",
-        reply_markup=keyboard
-    )
-
-
-@bot.message_handler(commands=["hide_location"])
-def hide_location(message):
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE users
-                    SET location_visible = FALSE
-                    WHERE telegram_id = %s
-                """, (message.from_user.id,))
-
-                if cur.rowcount == 0:
-                    bot.send_message(
-                        message.chat.id,
-                        "اول باید پروفایل بسازی."
-                    )
-                    return
-
+    if text == "❌ لغو":
+        registration.pop(user_id, None)
         bot.send_message(
             message.chat.id,
-            "✅ لوکیشنت از جستجوی دیگران مخفی شد."
+            "عملیات لغو شد.",
+            reply_markup=main_keyboard()
         )
-    except Exception:
-        app.logger.exception("Hide location failed")
-        bot.send_message(message.chat.id, "❌ خطا در دیتابیس.")
+        return
 
+    if user_id in registration:
+        step = registration[user_id]["step"]
+        profile = registration[user_id]["profile"]
 
-@bot.message_handler(commands=["show_location"])
-def show_location(message):
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE users
-                    SET location_visible = TRUE
-                    WHERE telegram_id = %s
-                      AND latitude IS NOT NULL
-                      AND longitude IS NOT NULL
-                """, (message.from_user.id,))
+        if step == "nickname":
+            if len(text) < 2 or len(text) > 30:
+                bot.send_message(message.chat.id, "نام مستعار باید بین ۲ تا ۳۰ حرف باشد.")
+                return
 
-                changed = cur.rowcount
-
-        if changed:
-            bot.send_message(
-                message.chat.id,
-                "✅ لوکیشن در جستجوی افراد نزدیک فعال شد."
-            )
-        else:
-            bot.send_message(
-                message.chat.id,
-                "لوکیشنی ثبت نشده. اول /location رو بزن."
-            )
-    except Exception:
-        app.logger.exception("Show location failed")
-        bot.send_message(message.chat.id, "❌ خطا در دیتابیس.")
-
-
-@bot.message_handler(commands=["delete_location"])
-def delete_location(message):
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE users
-                    SET latitude = NULL,
-                        longitude = NULL,
-                        location_visible = FALSE
-                    WHERE telegram_id = %s
-                """, (message.from_user.id,))
-
-        waiting_location.discard(message.from_user.id)
-
-        bot.send_message(
-            message.chat.id,
-            "✅ مختصات ذخیره‌شده حذف شد."
-        )
-    except Exception:
-        app.logger.exception("Delete location failed")
-        bot.send_message(message.chat.id, "❌ خطا در دیتابیس.")
-
-
-@bot.message_handler(commands=["hide_profile"])
-def hide_profile(message):
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE users
-                    SET profile_visible = FALSE
-                    WHERE telegram_id = %s
-                """, (message.from_user.id,))
-
-        bot.send_message(
-            message.chat.id,
-            "✅ پروفایلت از جستجوی دیگران مخفی شد."
-        )
-    except Exception:
-        app.logger.exception("Hide profile failed")
-        bot.send_message(message.chat.id, "❌ خطا در دیتابیس.")
-
-
-@bot.message_handler(commands=["show_profile"])
-def show_profile(message):
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE users
-                    SET profile_visible = TRUE
-                    WHERE telegram_id = %s
-                """, (message.from_user.id,))
-
-        bot.send_message(
-            message.chat.id,
-            "✅ پروفایلت دوباره قابل مشاهده شد."
-        )
-    except Exception:
-        app.logger.exception("Show profile failed")
-        bot.send_message(message.chat.id, "❌ خطا در دیتابیس.")
-
-
-@bot.message_handler(commands=["nearby"])
-def nearby(message):
-    user_id = message.from_user.id
-
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT latitude, longitude, age
-                    FROM users
-                    WHERE telegram_id = %s
-                """, (user_id,))
-                own = cur.fetchone()
-
-                if not own or own[0] is None or own[1] is None:
-                    bot.send_message(
-                        message.chat.id,
-                        "اول لوکیشنت رو ثبت کن: /location"
-                    )
-                    return
-
-                if not own[2]:
-                    bot.send_message(
-                        message.chat.id,
-                        "سن پروفایلت ثبت نشده."
-                    )
-                    return
-
-                my_lat, my_lon, my_age = own
-
-                if my_age < 18:
-                    age_condition = "age BETWEEN 16 AND 17"
-                else:
-                    age_condition = "age >= 18"
-
-                cur.execute(f"""
-                    SELECT telegram_id, nickname, age, city,
-                           latitude, longitude
-                    FROM users
-                    WHERE telegram_id != %s
-                      AND location_visible = TRUE
-                      AND profile_visible = TRUE
-                      AND latitude IS NOT NULL
-                      AND longitude IS NOT NULL
-                      AND {age_condition}
-                      AND NOT EXISTS (
-                          SELECT 1 FROM blocks b
-                          WHERE
-                            (b.blocker_id = %s
-                             AND b.blocked_id = users.telegram_id)
-                            OR
-                            (b.blocker_id = users.telegram_id
-                             AND b.blocked_id = %s)
-                      )
-                """, (user_id, user_id, user_id))
-
-                candidates = cur.fetchall()
-
-        results = []
-
-        for other_id, nickname, age, city, lat, lon in candidates:
-            lat1 = math.radians(my_lat)
-            lat2 = math.radians(lat)
-            delta_lat = math.radians(lat - my_lat)
-            delta_lon = math.radians(lon - my_lon)
-
-            a = (
-                math.sin(delta_lat / 2) ** 2
-                + math.cos(lat1) * math.cos(lat2)
-                * math.sin(delta_lon / 2) ** 2
-            )
-
-            distance = 6371 * 2 * math.asin(
-                min(1, math.sqrt(a))
-            )
-
-            if distance <= 5:
-                results.append(
-                    (distance, other_id, nickname, age, city)
-                )
-
-        results.sort(key=lambda item: item[0])
-
-        if not results:
-            bot.send_message(
-                message.chat.id,
-                "فعلاً کسی در شعاع ۵ کیلومتری تو پیدا نشد."
-            )
+            profile["nickname"] = text
+            registration[user_id]["step"] = "age"
+            bot.send_message(message.chat.id, "چند سالته؟ فقط عدد وارد کن:")
             return
 
-        for distance, other_id, nickname, age, city in results[:10]:
-            keyboard = types.InlineKeyboardMarkup()
-            keyboard.row(
-                types.InlineKeyboardButton(
-                    "🚫 بلاک",
-                    callback_data=f"block:{other_id}"
-                ),
-                types.InlineKeyboardButton(
-                    "⚠️ گزارش",
-                    callback_data=f"report:{other_id}"
-                )
-            )
+        if step == "age":
+            try:
+                age = int(text)
+                if age < 18 or age > 100:
+                    raise ValueError
+            except ValueError:
+                bot.send_message(message.chat.id, "سن باید عددی بین ۱۸ تا ۱۰۰ باشد.")
+                return
+
+            profile["age"] = age
+            registration[user_id]["step"] = "gender"
+
+            keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            keyboard.row("مرد", "زن", "سایر")
+
+            bot.send_message(message.chat.id, "جنسیتت رو انتخاب کن:", reply_markup=keyboard)
+            return
+
+        if step == "gender":
+            if text not in ["مرد", "زن", "سایر"]:
+                bot.send_message(message.chat.id, "یکی از گزینه‌های موجود رو انتخاب کن.")
+                return
+
+            profile["gender"] = text
+            registration[user_id]["step"] = "city"
+            bot.send_message(message.chat.id, "اسم شهرت رو وارد کن:")
+            return
+
+        if step == "city":
+            if len(text) < 2 or len(text) > 60:
+                bot.send_message(message.chat.id, "اسم شهر معتبر نیست.")
+                return
+
+            profile["city"] = text
+            registration[user_id]["step"] = "location_consent"
+
+            keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            keyboard.row("📍 ارسال موقعیت", "رد کردن")
 
             bot.send_message(
                 message.chat.id,
-                f"👤 {nickname}\n"
-                f"سن: {age}\n"
-                f"شهر: {city}\n"
-                f"فاصله تقریبی: {distance:.1f} کیلومتر",
+                "می‌تونی موقعیتت رو برای پیدا کردن افراد نزدیک بفرستی.\n"
+                "موقعیتت فقط با اجازه خودت برای جست‌وجوی افراد نزدیک استفاده می‌شه.",
                 reply_markup=keyboard
             )
-
-    except Exception:
-        app.logger.exception("Nearby search failed")
-        bot.send_message(
-            message.chat.id,
-            "❌ در جستجوی افراد نزدیک خطایی رخ داد."
-        )
-
-
-@bot.callback_query_handler(
-    func=lambda call: call.data.startswith("block:")
-)
-def block_user(call):
-    try:
-        target_id = int(call.data.split(":")[1])
-        user_id = call.from_user.id
-
-        if target_id == user_id:
-            bot.answer_callback_query(
-                call.id,
-                "نمی‌تونی خودت رو بلاک کنی."
-            )
             return
 
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO blocks (blocker_id, blocked_id)
-                    VALUES (%s, %s)
-                    ON CONFLICT DO NOTHING
-                """, (user_id, target_id))
+        if step == "location_consent":
+            if text == "رد کردن":
+                profile["location_visible"] = False
+                finish_registration(message)
+                return
 
-        bot.answer_callback_query(
-            call.id,
-            "این کاربر بلاک شد."
-        )
-        bot.edit_message_reply_markup(
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=None
-        )
-    except Exception:
-        app.logger.exception("Block failed")
-        bot.answer_callback_query(
-            call.id,
-            "خطا در ثبت بلاک."
-        )
+            if text == "📍 ارسال موقعیت":
+                registration[user_id]["step"] = "waiting_location"
 
-
-@bot.callback_query_handler(
-    func=lambda call: call.data.startswith("report:")
-)
-def report_user(call):
-    try:
-        target_id = int(call.data.split(":")[1])
-        user_id = call.from_user.id
-
-        if target_id == user_id:
-            bot.answer_callback_query(
-                call.id,
-                "نمی‌تونی خودت رو گزارش کنی."
-            )
-            return
-
-        keyboard = types.InlineKeyboardMarkup()
-        reasons = [
-            ("رفتار آزاردهنده", "آزار"),
-            ("پروفایل جعلی", "جعلی"),
-            ("محتوای نامناسب", "محتوا"),
-            ("مورد دیگر", "سایر")
-        ]
-
-        for label, reason in reasons:
-            keyboard.add(types.InlineKeyboardButton(
-                label,
-                callback_data=f"reason:{target_id}:{reason}"
-            ))
-
-        bot.answer_callback_query(call.id)
-        bot.send_message(
-            call.message.chat.id,
-            "دلیل گزارش رو انتخاب کن:",
-            reply_markup=keyboard
-        )
-    except Exception:
-        app.logger.exception("Report setup failed")
-        bot.answer_callback_query(
-            call.id,
-            "خطا در ثبت گزارش."
-        )
-
-
-@bot.callback_query_handler(
-    func=lambda call: call.data.startswith("reason:")
-)
-def report_reason(call):
-    try:
-        parts = call.data.split(":", 2)
-        target_id = int(parts[1])
-        reason = parts[2]
-        user_id = call.from_user.id
-
-        if target_id == user_id:
-            bot.answer_callback_query(
-                call.id,
-                "گزارش نامعتبره."
-            )
-            return
-
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO reports
-                    (reporter_id, reported_id, reason)
-                    VALUES (%s, %s, %s)
-                """, (user_id, target_id, reason))
-
-        if ADMIN_ID:
-            try:
-                bot.send_message(
-                    ADMIN_ID,
-                    "⚠️ گزارش جدید در GapMate\n"
-                    f"گزارش‌دهنده: {user_id}\n"
-                    f"کاربر گزارش‌شده: {target_id}\n"
-                    f"دلیل: {reason}"
+                keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                keyboard.add(
+                    types.KeyboardButton(
+                        "ارسال موقعیت من",
+                        request_location=True
+                    )
                 )
-            except Exception:
-                app.logger.exception("Admin notification failed")
+                keyboard.add("رد کردن")
 
-        bot.answer_callback_query(
-            call.id,
-            "گزارش ثبت شد. ممنون."
-        )
-        bot.edit_message_reply_markup(
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=None
-        )
-    except Exception:
-        app.logger.exception("Report save failed")
-        bot.answer_callback_query(
-            call.id,
-            "ثبت گزارش ناموفق بود."
-        )
+                bot.send_message(
+                    message.chat.id,
+                    "برای ارسال موقعیت، دکمه زیر رو بزن:",
+                    reply_markup=keyboard
+                )
+                return
 
-
-@bot.message_handler(commands=["reports"])
-def list_reports(message):
-    if not ADMIN_ID or message.from_user.id != ADMIN_ID:
-        bot.send_message(message.chat.id, "اجازه دسترسی نداری.")
-        return
-
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT id, reporter_id, reported_id,
-                           reason, created_at
-                    FROM reports
-                    WHERE status = 'new'
-                    ORDER BY created_at DESC
-                    LIMIT 20
-                """)
-                rows = cur.fetchall()
-
-        if not rows:
-            bot.send_message(message.chat.id, "گزارش جدیدی وجود نداره.")
+            bot.send_message(message.chat.id, "ارسال موقعیت یا رد کردن رو انتخاب کن.")
             return
 
-        for report_id, reporter, reported, reason, created in rows:
+        if step == "waiting_location":
+            if text == "رد کردن":
+                profile["location_visible"] = False
+                finish_registration(message)
+                return
+
             bot.send_message(
                 message.chat.id,
-                f"گزارش #{report_id}\n"
-                f"گزارش‌دهنده: {reporter}\n"
-                f"کاربر گزارش‌شده: {reported}\n"
-                f"دلیل: {reason}\n"
-                f"زمان: {created}"
+                "لطفاً از دکمه ارسال موقعیت استفاده کن یا گزینه رد کردن رو بزن."
             )
-    except Exception:
-        app.logger.exception("Reports listing failed")
-        bot.send_message(message.chat.id, "خطا در دریافت گزارش‌ها.")
+            return
 
-
-@bot.message_handler(commands=["resolve_report"])
-def resolve_report(message):
-    if not ADMIN_ID or message.from_user.id != ADMIN_ID:
-        bot.send_message(message.chat.id, "اجازه دسترسی نداری.")
+    # دستورات صفحه اصلی
+    if text == "👤 پروفایل من":
+        show_profile(message)
         return
 
-    parts = (message.text or "").split()
+    if text == "🔎 افراد نزدیک":
+        nearby(message)
+        return
 
-    if len(parts) != 2 or not parts[1].isdigit():
+    if text == "📍 ارسال موقعیت":
+        ask_location(message)
+        return
+
+    if text == "🔒 حریم خصوصی":
         bot.send_message(
             message.chat.id,
-            "روش استفاده: /resolve_report شماره_گزارش"
+            "تنظیمات حریم خصوصی:",
+            reply_markup=privacy_keyboard()
         )
         return
 
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE reports
-                    SET status = 'reviewed'
-                    WHERE id = %s
-                """, (int(parts[1]),))
-
-        bot.send_message(message.chat.id, "گزارش بررسی‌شده علامت خورد.")
-    except Exception:
-        app.logger.exception("Resolve report failed")
-        bot.send_message(message.chat.id, "خطا در به‌روزرسانی گزارش.")
-
-
-@bot.message_handler(commands=["delete_account"])
-def delete_account(message):
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "بله، حسابم حذف شود",
-            callback_data="delete:confirm"
-        ),
-        types.InlineKeyboardButton(
-            "انصراف",
-            callback_data="delete:cancel"
-        )
-    )
-
-    bot.send_message(
-        message.chat.id,
-        "⚠️ با تأیید، پروفایل، لوکیشن، پیام‌های ذخیره‌شده "
-        "و فهرست بلاک‌های مربوط به حساب تو حذف می‌شوند.\n"
-        "این کار قابل بازگشت نیست. مطمئنی؟",
-        reply_markup=keyboard
-    )
-
-
-@bot.callback_query_handler(
-    func=lambda call: call.data.startswith("delete:")
-)
-def delete_account_callback(call):
-    if call.data == "delete:cancel":
-        bot.answer_callback_query(call.id, "حذف حساب لغو شد.")
-        bot.edit_message_text(
-            "حذف حساب لغو شد.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        return
-
-    if call.data != "delete:confirm":
-        return
-
-    user_id = call.from_user.id
-
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM users WHERE telegram_id = %s",
-                    (user_id,)
-                )
-                cur.execute(
-                    "DELETE FROM messages WHERE telegram_id = %s",
-                    (user_id,)
-                )
-                cur.execute("""
-                    DELETE FROM blocks
-                    WHERE blocker_id = %s OR blocked_id = %s
-                """, (user_id, user_id))
-                cur.execute("""
-                    DELETE FROM reports
-                    WHERE reporter_id = %s OR reported_id = %s
-                """, (user_id, user_id))
-
-        registration.pop(user_id, None)
-        waiting_location.discard(user_id)
-
-        bot.answer_callback_query(call.id, "حساب حذف شد.")
-        bot.edit_message_text(
-            "حساب و اطلاعات شخصی ذخیره‌شده‌ات حذف شد.\n"
-            "برای ساخت حساب جدید /start رو بزن.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-    except Exception:
-        app.logger.exception("Account deletion failed")
-        bot.answer_callback_query(
-            call.id,
-            "حذف حساب ناموفق بود."
-        )
-
-
-@bot.message_handler(
-    content_types=["text", "photo", "location"],
-    func=lambda message: (
-        message.from_user.id in registration
-        and not (message.text or "").startswith("/")
-    )
-)
-def handle_registration(message):
-    save_message(message)
-
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    data = registration[user_id]
-    profile = data["profile"]
-    step = data["step"]
-
-    if step == "nickname":
-        if not message.text or len(message.text.strip()) < 2:
-            bot.send_message(chat_id, "نام مستعار باید حداقل دو حرف باشه.")
-            return
-
-        profile["nickname"] = message.text.strip()[:50]
-        data["step"] = "age"
-        bot.send_message(chat_id, "چند سالته؟ (۱۶ تا ۹۹)")
-
-    elif step == "age":
-        try:
-            age = int(message.text.strip())
-            if not 16 <= age <= 99:
-                raise ValueError
-        except (ValueError, AttributeError):
-            bot.send_message(chat_id, "سن معتبر بین ۱۶ تا ۹۹ وارد کن.")
-            return
-
-        profile["age"] = age
-        data["step"] = "city"
-        bot.send_message(chat_id, "در کدوم شهری؟")
-
-    elif step == "city":
-        if not message.text:
-            bot.send_message(chat_id, "اسم شهر رو متنی بفرست.")
-            return
-
-        profile["city"] = message.text.strip()[:100]
-        data["step"] = "province"
-        bot.send_message(chat_id, "استان یا ایالتت رو وارد کن:")
-
-    elif step == "province":
-        if not message.text:
-            bot.send_message(chat_id, "استان یا ایالت رو متنی بفرست.")
-            return
-
-        profile["province"] = message.text.strip()[:100]
-        data["step"] = "gender"
-
-        keyboard = types.ReplyKeyboardMarkup(
-            resize_keyboard=True,
-            one_time_keyboard=True
-        )
-        keyboard.add("مرد", "زن", "ترجیح می‌دهم نگویم")
-
+    if text == "🚫 بلاک کاربر":
         bot.send_message(
-            chat_id,
-            "جنسیتت رو انتخاب کن:",
+            message.chat.id,
+            "برای بلاک کردن، شناسه عددی تلگرام کاربر رو بفرست:"
+        )
+        registration[user_id] = {
+            "step": "block_user",
+            "profile": {}
+        }
+        return
+
+    if text == "⚠️ گزارش کاربر":
+        bot.send_message(
+            message.chat.id,
+            "شناسه عددی کاربر موردنظر رو بفرست:"
+        )
+        registration[user_id] = {
+            "step": "report_user",
+            "profile": {}
+        }
+        return
+
+    if text == "🗑 حذف حساب":
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(
+            types.InlineKeyboardButton(
+                "بله، حسابم حذف شود",
+                callback_data="confirm_delete"
+            ),
+            types.InlineKeyboardButton(
+                "انصراف",
+                callback_data="cancel_delete"
+            )
+        )
+        bot.send_message(
+            message.chat.id,
+            "⚠️ با حذف حساب، پروفایل و اطلاعات مرتبط با آن حذف می‌شود.\n"
+            "این کار قابل بازگشت نیست.",
             reply_markup=keyboard
         )
+        return
 
-    elif step == "gender":
-        if message.text not in [
-            "مرد", "زن", "ترجیح می‌دهم نگویم"
-        ]:
-            bot.send_message(chat_id, "یکی از گزینه‌ها رو انتخاب کن.")
+    # مراحل بلاک و گزارش
+    if user_id in registration:
+        step = registration[user_id]["step"]
+
+        if step in ["block_user", "report_user"]:
+            try:
+                target_id = int(text)
+                if target_id == user_id:
+                    bot.send_message(message.chat.id, "نمی‌تونی خودت رو انتخاب کنی.")
+                    return
+            except ValueError:
+                bot.send_message(message.chat.id, "لطفاً شناسه عددی معتبر بفرست.")
+                return
+
+            registration.pop(user_id, None)
+
+            if step == "block_user":
+                try:
+                    with get_db() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                INSERT INTO blocks (blocker_id, blocked_id)
+                                VALUES (%s, %s)
+                                ON CONFLICT DO NOTHING
+                            """, (user_id, target_id))
+
+                    bot.send_message(
+                        message.chat.id,
+                        "🚫 کاربر بلاک شد.",
+                        reply_markup=main_keyboard()
+                    )
+                except Exception:
+                    logger.exception("Block failed")
+                    bot.send_message(message.chat.id, "خطا در بلاک کاربر.")
+
+            else:
+                registration[user_id] = {
+                    "step": "report_reason",
+                    "profile": {"reported_id": target_id}
+                }
+                bot.send_message(message.chat.id, "دلیل گزارش رو بنویس:")
             return
 
-        profile["gender"] = message.text
-        data["step"] = "photo"
-        bot.send_message(chat_id, "یک عکس پروفایل بفرست:")
+        if step == "report_reason":
+            target_id = registration[user_id]["profile"]["reported_id"]
 
-    elif step == "photo":
-        if not message.photo:
-            bot.send_message(chat_id, "لطفاً عکس ارسال کن.")
+            try:
+                with get_db() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO reports (reporter_id, reported_id, reason)
+                            VALUES (%s, %s, %s)
+                        """, (user_id, target_id, text))
+
+                registration.pop(user_id, None)
+
+                bot.send_message(
+                    message.chat.id,
+                    "✅ گزارش ثبت شد. ممنون که اطلاع دادی.",
+                    reply_markup=main_keyboard()
+                )
+
+                if ADMIN_ID:
+                    try:
+                        bot.send_message(
+                            ADMIN_ID,
+                            "⚠️ گزارش جدید\n"
+                            f"گزارش‌دهنده: {user_id}\n"
+                            f"کاربر گزارش‌شده: {target_id}\n"
+                            f"دلیل: {text}"
+                        )
+                    except Exception:
+                        logger.exception("Admin notification failed")
+
+            except Exception:
+                logger.exception("Report failed")
+                bot.send_message(message.chat.id, "خطا در ثبت گزارش.")
             return
 
-        profile["photo"] = message.photo[-1].file_id
-        data["step"] = "bio"
-        bot.send_message(chat_id, "یک معرفی کوتاه از خودت بنویس:")
-
-    elif step == "bio":
-        if not message.text or len(message.text.strip()) < 5:
-            bot.send_message(
-                chat_id,
-                "معرفی باید حداقل پنج حرف داشته باشه."
-            )
-            return
-
-        profile["bio"] = message.text.strip()[:500]
-        data["step"] = "location"
-
-        keyboard = types.ReplyKeyboardMarkup(
-            resize_keyboard=True,
-            one_time_keyboard=True
-        )
-        keyboard.add(types.KeyboardButton(
-            "📍 ارسال موقعیت مکانی",
-            request_location=True
-        ))
-        keyboard.add("رد کردن")
-
-        bot.send_message(
-            chat_id,
-            "اگر می‌خوای افراد نزدیکت رو پیدا کنی، "
-            "می‌تونی لوکیشنت رو ارسال کنی.\n"
-            "مختصات دقیق به دیگران نمایش داده نمی‌شه.\n"
-            "ارسال لوکیشن اختیاریه.",
-            reply_markup=keyboard
-        )
-
-    elif step == "location":
-        if message.location:
-            profile["latitude"] = message.location.latitude
-            profile["longitude"] = message.location.longitude
-            profile["location_visible"] = True
-            finish_registration(user_id, chat_id, profile)
-
-        elif message.text == "رد کردن":
-            profile["latitude"] = None
-            profile["longitude"] = None
-            profile["location_visible"] = False
-            finish_registration(user_id, chat_id, profile)
-
-        else:
-            bot.send_message(
-                chat_id,
-                "لوکیشن رو بفرست یا گزینه «رد کردن» رو انتخاب کن."
-            )
+    # ذخیره فعالیت، بدون ذخیره متن پیام خصوصی
+    log_activity(user_id, "other_text")
 
 
-@bot.message_handler(
-    content_types=["location"],
-    func=lambda message: message.from_user.id in waiting_location
-)
+# =========================
+# دریافت موقعیت
+# =========================
+
+@bot.message_handler(content_types=["location"])
 def receive_location(message):
     user_id = message.from_user.id
-    waiting_location.discard(user_id)
+    location = message.location
 
     try:
+        if user_id in registration:
+            profile = registration[user_id]["profile"]
+
+            if registration[user_id]["step"] == "waiting_location":
+                profile["latitude"] = location.latitude
+                profile["longitude"] = location.longitude
+                profile["location_visible"] = True
+                finish_registration(message)
+                return
+
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -995,77 +633,338 @@ def receive_location(message):
                         longitude = %s,
                         location_visible = TRUE
                     WHERE telegram_id = %s
-                """, (
-                    message.location.latitude,
-                    message.location.longitude,
-                    user_id
-                ))
-
-                changed = cur.rowcount
-
-        if not changed:
-            bot.send_message(
-                message.chat.id,
-                "اول پروفایلت رو بساز: /start"
-            )
-            return
+                """, (location.latitude, location.longitude, user_id))
 
         bot.send_message(
             message.chat.id,
-            "✅ لوکیشن ثبت شد. برای دیدن افراد نزدیک /nearby رو بزن.",
+            "✅ موقعیتت ذخیره شد.",
             reply_markup=main_keyboard()
         )
 
     except Exception:
-        app.logger.exception("Location save failed")
-        bot.send_message(
-            message.chat.id,
-            "❌ ذخیره لوکیشن ناموفق بود."
+        logger.exception("Location save failed")
+        bot.send_message(message.chat.id, "خطا در ذخیره موقعیت.")
+
+
+def ask_location(message):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    keyboard.add(
+        types.KeyboardButton(
+            "ارسال موقعیت من",
+            request_location=True
         )
-
-
-@bot.message_handler(
-    content_types=["text"],
-    func=lambda message: (
-        message.from_user.id in waiting_location
-        and message.text == "لغو"
     )
-)
-def cancel_location(message):
-    waiting_location.discard(message.from_user.id)
+    keyboard.add("❌ لغو")
+
     bot.send_message(
         message.chat.id,
-        "ارسال لوکیشن لغو شد."
+        "برای ذخیره موقعیت، دکمه زیر رو بزن:",
+        reply_markup=keyboard
     )
 
 
-@bot.message_handler(content_types=["text", "photo", "location"])
-def save_other_messages(message):
-    save_message(message)
+# =========================
+# پروفایل
+# =========================
 
+def show_profile(message):
+    try:
+        user = get_user(message.from_user.id)
+
+        if not user:
+            bot.send_message(message.chat.id, "هنوز پروفایلی نداری. /start رو بزن.")
+            return
+
+        bot.send_message(
+            message.chat.id,
+            "👤 پروفایل تو\n\n"
+            f"نام مستعار: {user['nickname']}\n"
+            f"سن: {user['age']}\n"
+            f"جنسیت: {user['gender']}\n"
+            f"شهر: {user['city']}\n"
+            f"نمایش پروفایل: {'روشن' if user['profile_visible'] else 'خاموش'}\n"
+            f"نمایش موقعیت: {'روشن' if user['location_visible'] else 'خاموش'}",
+            reply_markup=main_keyboard()
+        )
+
+    except Exception:
+        logger.exception("Profile display failed")
+        bot.send_message(message.chat.id, "خطا در نمایش پروفایل.")
+
+
+# =========================
+# افراد نزدیک
+# =========================
+
+def distance_km(lat1, lon1, lat2, lon2):
+    radius = 6371
+
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+
+    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def nearby(message):
+    user_id = message.from_user.id
+
+    try:
+        me = get_user(user_id)
+
+        if not me:
+            bot.send_message(message.chat.id, "اول باید پروفایلت رو بسازی.")
+            return
+
+        if not me["latitude"] or not me["longitude"] or not me["location_visible"]:
+            bot.send_message(
+                message.chat.id,
+                "برای پیدا کردن افراد نزدیک، اول موقعیتت رو ارسال و نمایش موقعیت رو فعال کن."
+            )
+            return
+
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT * FROM users
+                    WHERE telegram_id != %s
+                    AND profile_visible = TRUE
+                    AND location_visible = TRUE
+                    AND latitude IS NOT NULL
+                    AND longitude IS NOT NULL
+                    AND age >= 18
+                """, (user_id,))
+                candidates = cur.fetchall()
+
+        results = []
+
+        for person in candidates:
+            if is_blocked(user_id, person["telegram_id"]):
+                continue
+
+            distance = distance_km(
+                me["latitude"],
+                me["longitude"],
+                person["latitude"],
+                person["longitude"]
+            )
+
+            if distance <= 50:
+                results.append((distance, person))
+
+        results.sort(key=lambda item: item[0])
+
+        if not results:
+            bot.send_message(
+                message.chat.id,
+                "فعلاً کسی در نزدیکی تو پیدا نشد.",
+                reply_markup=main_keyboard()
+            )
+            return
+
+        bot.send_message(message.chat.id, "🔎 افراد نزدیک به تو:")
+
+        for distance, person in results[:10]:
+            bot.send_message(
+                message.chat.id,
+                "👤 یک پروفایل نزدیک\n\n"
+                f"نام مستعار: {person['nickname']}\n"
+                f"سن: {person['age']}\n"
+                f"جنسیت: {person['gender']}\n"
+                f"شهر: {person['city']}\n"
+                f"فاصله تقریبی: {round(distance)} کیلومتر\n\n"
+                f"شناسه برای گزارش یا بلاک: {person['telegram_id']}"
+            )
+
+    except Exception:
+        logger.exception("Nearby search failed")
+        bot.send_message(message.chat.id, "خطا در جست‌وجوی افراد نزدیک.")
+
+
+# =========================
+# حریم خصوصی
+# =========================
+
+@bot.callback_query_handler(func=lambda call: call.data in [
+    "hide_profile", "show_profile", "hide_location", "show_location"
+])
+def privacy_callback(call):
+    user_id = call.from_user.id
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+
+                if call.data == "hide_profile":
+                    cur.execute("""
+                        UPDATE users SET profile_visible = FALSE
+                        WHERE telegram_id = %s
+                    """, (user_id,))
+                    result = "پروفایلت مخفی شد."
+
+                elif call.data == "show_profile":
+                    cur.execute("""
+                        UPDATE users SET profile_visible = TRUE
+                        WHERE telegram_id = %s
+                    """, (user_id,))
+                    result = "پروفایلت نمایش داده می‌شه."
+
+                elif call.data == "hide_location":
+                    cur.execute("""
+                        UPDATE users SET location_visible = FALSE
+                        WHERE telegram_id = %s
+                    """, (user_id,))
+                    result = "موقعیتت مخفی شد."
+
+                else:
+                    cur.execute("""
+                        UPDATE users SET location_visible = TRUE
+                        WHERE telegram_id = %s
+                        AND latitude IS NOT NULL
+                        AND longitude IS NOT NULL
+                    """, (user_id,))
+                    result = "نمایش موقعیت فعال شد، اگر قبلاً موقعیت ذخیره کرده باشی."
+
+        bot.answer_callback_query(call.id, result)
+        bot.send_message(call.message.chat.id, result)
+
+    except Exception:
+        logger.exception("Privacy update failed")
+        bot.answer_callback_query(call.id, "خطا در تغییر تنظیمات.")
+
+
+# =========================
+# حذف حساب
+# =========================
+
+@bot.callback_query_handler(func=lambda call: call.data in [
+    "confirm_delete", "cancel_delete"
+])
+def delete_callback(call):
+    user_id = call.from_user.id
+
+    if call.data == "cancel_delete":
+        bot.answer_callback_query(call.id, "حذف حساب لغو شد.")
+        bot.send_message(
+            call.message.chat.id,
+            "حذف حساب لغو شد.",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM users WHERE telegram_id = %s", (user_id,))
+                cur.execute("""
+                    DELETE FROM blocks
+                    WHERE blocker_id = %s OR blocked_id = %s
+                """, (user_id, user_id))
+                cur.execute("""
+                    DELETE FROM reports
+                    WHERE reporter_id = %s OR reported_id = %s
+                """, (user_id, user_id))
+                cur.execute("""
+                    DELETE FROM activity_logs
+                    WHERE telegram_id = %s
+                """, (user_id,))
+
+        registration.pop(user_id, None)
+
+        bot.answer_callback_query(call.id, "حساب حذف شد.")
+        bot.send_message(
+            call.message.chat.id,
+            "حساب و اطلاعات مرتبط با آن حذف شد.\n"
+            "هر زمان خواستی می‌تونی دوباره /start رو بزنی."
+        )
+
+    except Exception:
+        logger.exception("Account deletion failed")
+        bot.answer_callback_query(call.id, "خطا در حذف حساب.")
+        bot.send_message(call.message.chat.id, "حذف حساب انجام نشد.")
+
+
+# =========================
+# پنل گزارش‌های مدیر
+# =========================
+
+@bot.message_handler(commands=["reports"])
+def reports(message):
+    if not ADMIN_ID or message.from_user.id != ADMIN_ID:
+        bot.send_message(message.chat.id, "اجازه دسترسی نداری.")
+        return
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT * FROM reports
+                    ORDER BY created_at DESC
+                    LIMIT 30
+                """)
+                rows = cur.fetchall()
+
+        if not rows:
+            bot.send_message(message.chat.id, "گزارشی ثبت نشده.")
+            return
+
+        for row in rows:
+            bot.send_message(
+                message.chat.id,
+                f"گزارش شماره {row['id']}\n"
+                f"گزارش‌دهنده: {row['reporter_id']}\n"
+                f"کاربر: {row['reported_id']}\n"
+                f"دلیل: {row['reason']}"
+            )
+
+    except Exception:
+        logger.exception("Reports command failed")
+        bot.send_message(message.chat.id, "خطا در دریافت گزارش‌ها.")
+
+
+# =========================
+# وب‌هوک تلگرام و Render
+# =========================
 
 @app.route("/", methods=["GET"])
 def home():
-    return "GapMate is running!", 200
+    return "GapMate is running", 200
 
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/" + BOT_TOKEN, methods=["POST"])
 def webhook():
-    if request.headers.get("content-type", "").startswith(
-        "application/json"
-    ):
-        update = telebot.types.Update.de_json(
-            request.get_data().decode("utf-8")
-        )
+    if request.headers.get("content-type") == "application/json":
+        json_string = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return "OK", 200
 
-    return "Invalid content type", 400
+    return "Invalid content type", 403
 
 
-if WEBHOOK_URL:
-    bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+@app.route("/health", methods=["GET"])
+def health():
+    return "OK", 200
 
+
+# =========================
+# راه‌اندازی
+# =========================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+    init_db()
+
+    if RENDER_EXTERNAL_URL:
+        bot.remove_webhook()
+        bot.set_webhook(
+            url=RENDER_EXTERNAL_URL + "/" + BOT_TOKEN
+        )
+
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
