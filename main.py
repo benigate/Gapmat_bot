@@ -1,13 +1,22 @@
 
+
+
 import os
 import telebot
+from flask import Flask, request
 
 TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.getenv("PORT", 10000))
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
+    raise RuntimeError("BOT_TOKEN is missing")
+
+if not RENDER_URL:
+    raise RuntimeError("RENDER_EXTERNAL_URL is missing")
 
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -19,25 +28,40 @@ def start(message):
 
     bot.send_message(
         message.chat.id,
-        "سلام! به GapMate خوش اومدی! ❤️\n\n"
-        "اینجا می‌تونی آدم‌های جدید پیدا کنی و ارتباط بسازی.\n"
+        "سلام! به GapMate خوش اومدی! ❤️\n"
         "برای شروع یکی از گزینه‌ها رو انتخاب کن.",
         reply_markup=keyboard
     )
 
 @bot.message_handler(func=lambda message: True)
 def menu(message):
-    if message.text == "👤 ساخت پروفایل":
-        bot.reply_to(message, "به‌زودی ثبت‌نام و ساخت پروفایلت رو شروع می‌کنیم! ❤️")
-    elif message.text == "🔎 پیدا کردن افراد":
-        bot.reply_to(message, "بخش پیدا کردن افراد در حال آماده‌سازیه.")
-    elif message.text == "📩 درخواست‌های من":
-        bot.reply_to(message, "هنوز درخواستی نداری.")
-    elif message.text == "⚙️ تنظیمات":
-        bot.reply_to(message, "تنظیمات GapMate به‌زودی آماده می‌شه.")
-    else:
-        bot.reply_to(message, "برای شروع دستور /start رو بفرست.")
+    answers = {
+        "👤 ساخت پروفایل": "بخش ساخت پروفایل به‌زودی آماده می‌شه ❤️",
+        "🔎 پیدا کردن افراد": "بخش پیدا کردن افراد به‌زودی آماده می‌شه.",
+        "📩 درخواست‌های من": "هنوز درخواستی نداری.",
+        "⚙️ تنظیمات": "تنظیمات به‌زودی آماده می‌شه."
+    }
+    bot.reply_to(
+        message,
+        answers.get(message.text, "برای شروع /start رو بفرست.")
+    )
 
-print("GapMate is running...")
-bot.infinity_polling()
+@app.route("/", methods=["GET"])
+def home():
+    return "GapMate is running!", 200
 
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        update = telebot.types.Update.de_json(
+            request.get_data().decode("utf-8")
+        )
+        bot.process_new_updates([update])
+        return "OK", 200
+    return "Invalid content type", 400
+
+bot.remove_webhook()
+bot.set_webhook(url=RENDER_URL + "/webhook")
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=PORT)
