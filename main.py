@@ -164,7 +164,20 @@ def handle_registration(message):
             "🎉 پروفایلت با موفقیت در دیتابیس ذخیره شد!",
             reply_markup=types.ReplyKeyboardRemove()
         )
-
+@bot.message_handler(commands=["dbcheck"])
+def dbcheck(message):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM users")
+                count = cur.fetchone()[0]
+        bot.send_message(
+            message.chat.id,
+            f"✅ اتصال دیتابیس برقرار است.\nتعداد پروفایل‌های ذخیره‌شده: {count}"
+        )
+    except Exception:
+        app.logger.exception("Database check failed")
+        bot.send_message(message.chat.id, "❌ اتصال دیتابیس مشکل دارد.")
 @app.route("/", methods=["GET"])
 def home():
     return "GapMate is running!"
