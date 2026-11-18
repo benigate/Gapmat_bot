@@ -456,4 +456,22 @@ def c_cb(c):
         elif d == "wallet:buy_toman": bot.edit_message_text("💳 بسته‌های تومانی:", chat_id=cid, message_id=mid, reply_markup=wallet_toman_kb())
         elif d == "wallet:buy_stars": bot.edit_message_text("💫 بسته‌های ستاره:", chat_id=cid, message_id=mid, reply_markup=wallet_stars_kb())
         elif d == "wallet:vip": bot.edit_message_text("👑 خرید VIP\n\nبا خرید VIP امکانات ویژه دریافت می‌کنید.\n\nقیمت: ۲,۵۰۰,۰۰۰ تومان یا ۷۰۰ ستاره\n\n(درگاه پرداخت در حال راه‌اندازی است)", chat_id=cid, message_id=mid)
-        elif d.startswith("pay:"): bot
+                elif d.startswith("pay:"): 
+            bot.answer_callback_query(c.id, "درگاه پرداخت در حال راه‌اندازی است. به زودی...", show_alert=True)
+        bot.answer_callback_query(c.id)
+    except: pass
+
+@app.route("/")
+def health(): return "OK", 200
+
+def run():
+    init_db()
+    try: bot.delete_webhook(drop_pending_updates=True)
+    except: pass
+    while True:
+        try: bot.infinity_polling(timeout=30, long_polling_timeout=25)
+        except: time.sleep(5)
+
+if __name__ == "__main__":
+    threading.Thread(target=run, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
