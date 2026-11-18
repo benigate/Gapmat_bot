@@ -361,3 +361,23 @@ def c_text(m):
             col = "req_min_age" if st == "filt_min_age" else "req_max_age"
             conn = db(); cur = conn.cursor(); cur.execute(f"UPDATE users SET {col}=%s WHERE user_id=%s", (val, uid)); conn.commit(); cur.close(); conn.close()
             states.pop(uid, None); bot.send_message(m.chat.id, "✅ به‌روزر
+            elif d.startswith("pay:"): 
+                bot.answer_callback_query(c.id, "درگاه پرداخت در حال راه‌اندازی است.", show_alert=True)
+            
+            bot.answer_callback_query(c.id)
+        except: pass
+
+@app.route("/")
+def health(): return "OK", 200
+
+def run():
+    init_db()
+    try: bot.delete_webhook(drop_pending_updates=True)
+    except: pass
+    while True:
+        try: bot.infinity_polling(timeout=30, long_polling_timeout=25)
+        except: time.sleep(5)
+
+if __name__ == "__main__":
+    threading.Thread(target=run, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
