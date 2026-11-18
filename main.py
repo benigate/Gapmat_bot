@@ -54,9 +54,10 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS reports (id SERIAL PRIMARY KEY, reporter_id BIGINT, target_id BIGINT, reason TEXT, status TEXT DEFAULT 'open')")
         cur.execute("CREATE TABLE IF NOT EXISTS chats (user1 BIGINT, user2 BIGINT, active BOOLEAN DEFAULT TRUE, PRIMARY KEY (user1, user2))")
         cur.execute("CREATE TABLE IF NOT EXISTS referrals (referrer_id BIGINT, referred_id BIGINT UNIQUE)")
-        
-        # جدول درخواست دایرکت
         cur.execute("CREATE TABLE IF NOT EXISTS direct_requests (id SERIAL PRIMARY KEY, sender_id BIGINT, receiver_id BIGINT, message TEXT, status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        
+        # اصلاح خودکار سکه‌های قبلی
+        cur.execute("UPDATE users SET stars = 6 WHERE stars = 250")
         
         conn.commit()
         logger.info("DB ready")
@@ -204,8 +205,12 @@ def start_chat(uid, tid, cid):
     conn = db(); cur = conn.cursor()
     try:
         cur.execute("SELECT 1 FROM matches WHERE user1=%s AND user2=%s", (a, b))
-        if not cur.fetchone(): bot.send_message(cid, "اول باید مچ بشین."); return
-        cur.execute("INSERT INTO chats (user1, user2, active) VALUES (%s,%s,TRUE) ON CONFLICT (user1,user2) DO UPDATE SET active=TRUE", (a, b)); conn.commit()
+        if not cur.fetchone(): 
+            # اگه مچ نبودن، چت دایرکت باز بشه
+            cur.execute("INSERT INTO chats (user1, user2, active) VALUES (%s,%s,TRUE) ON CONFLICT (user1,user2) DO UPDATE SET active=TRUE", (a, b))
+        else:
+            cur.execute("INSERT INTO chats (user1, user2, active) VALUES (%s,%s,TRUE) ON CONFLICT (user1,user2) DO UPDATE SET active=TRUE", (a, b))
+        conn.commit()
     finally: cur.close(); conn.close()
     bot.send_message(uid, "💬 چت شروع شد. /stop برای پایان.")
     try: bot.send_message(tid, "💬 چت شروع شد. /stop برای پایان.")
@@ -298,7 +303,10 @@ def process_direct(uid, tid, cid, req_type):
         cur.execute("UPDATE users SET stars = stars - %s WHERE user_id=%s", (cost, uid))
         conn.commit()
         states[uid] = {"step": f"{req_type}_msg", "tid": tid}
-        bot.send_message(cid, f"هزینه {cost} سکه کسر شد. حالا پیامت رو بنویس:")
+        if req_type == "direct":
+            bot.send_message(cid, f"هزینه {cost} سکه کسر شد. حالا متن دایرکتت رو بنویس:")
+        else:
+            bot.send_message(cid, f"هزینه {cost} سکه کسر شد. حالا پیام درخواست چتت رو بنویس:")
     except: conn.rollback()
     finally: cur.close(); conn.close()
 
@@ -310,7 +318,12 @@ def send_request(uid, tid, cid, text, req_type):
     finally: cur.close(); conn.close()
     kb = types.InlineKeyboardMarkup()
     kb.row(types.InlineKeyboardButton("✅ تایید", callback_data=f"appr:{uid}:{req_type}"), types.InlineKeyboardButton("❌ رد", callback_data=f"rej:{uid}:{req_type}"))
-    bot.send_message(tid, f"📩 درخواست جدید از کاربر {uid}:\n\n{text}", reply_markup=kb)
+    
+    if req_type == "direct":
+        bot.send_message(tid, f"📩 دایرکت جدید از کاربر {uid}:\n\n{text}", reply_markup=kb)
+    else:
+        bot.send_message(tid, f"💬 درخواست چت از کاربر {uid}:\n\n{text}", reply_markup=kb)
+        
     bot.send_message(cid, "درخواست ارسال شد. منتظر تایید باشید.")
 
 # --- Handlers ---
@@ -357,6 +370,12 @@ def c_photo(m):
 def c_text(m):
     try:
         uid = m.from_user.id; t = (m.text or "").strip(); update_active(uid); s = states.get(uid)
+        
+        # اگه کاربر جدید بود و ثبت‌نام نکرده بود
+        if not is_reg(uid) and not s:
+            bot.send_message(m.chat.id, "سلام! برای استفاده از ربات لطفاً دستور /start را بزنید.")
+            return
+
         if s:
             st = s["step"]
             if st == "nickname": s["nickname"] = t[:50]; s["step"] = "age"; bot.send_message(m.chat.id, "چند سالته؟ (۱۸+)"); return
@@ -383,73 +402,4 @@ def c_text(m):
         
         if relay(m): return
         
-        # --- Menu Handlers ---
-        if t == "🔍 جستجوی افراد": find(m.chat.id, uid)
-        elif t == "❤️ مچ‌های من": show_matches(m.chat.id, uid)
-        elif t == "👤 پروفایل من": show_profile(m.chat.id, uid)
-        elif t == "⚙️ تنظیمات": bot.send_message(m.chat.id, "⚙️ تنظیمات:", reply_markup=settings_kb(uid))
-        elif t == "🪙 کیف پول":
-            u = get_user(uid)
-            kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("➕ ۱۰۰ سکه", callback_data="buy:100"), types.InlineKeyboardButton("➕ ۵۰۰ سکه", callback_data="buy:500"))
-            bot.send_message(m.chat.id, f"🪙 موجودی: {u['stars']}", reply_markup=kb)
-        elif t == "🔗 دعوت دوستان": invite(m.chat.id, uid)
-        else:
-            bot.send_message(m.chat.id, "متوجه نشدم! لطفاً از منوی زیر استفاده کن.", reply_markup=main_menu_kb())
-    except: pass
-
-@bot.callback_query_handler(func=lambda c: True)
-def c_cb(c):
-    try:
-        d = c.data or ""; uid = c.from_user.id; cid = c.message.chat.id if c.message else uid; mid = c.message.message_id if c.message else None
-        
-        if d.startswith("like:"): like(uid, int(d.split(":")[1]), cid)
-        elif d.startswith("pass:"): pass_user(uid, int(d.split(":")[1]), cid)
-        elif d.startswith("block:"): block(uid, int(d.split(":")[1]), cid)
-        elif d.startswith("report:"): states[uid] = {"step": "report", "tid": int(d.split(":")[1])}; bot.send_message(cid, "دلیل:")
-        elif d.startswith("chat:"): start_chat(uid, int(d.split(":")[1]), cid)
-        elif d.startswith("dir:"): process_direct(uid, int(d.split(":")[1]), cid, "direct")
-        elif d.startswith("req:"): process_direct(uid, int(d.split(":")[1]), cid, "chat")
-        
-        elif d.startswith("appr:"):
-            _, sender_id, req_type = d.split(":")
-            sender_id = int(sender_id)
-            if req_type == "chat":
-                start_chat(uid, sender_id, cid)
-            else:
-                bot.send_message(cid, "دایرکت تایید شد. حالا می‌تونید چت کنید.")
-                start_chat(uid, sender_id, cid)
-            bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
-            
-        elif d.startswith("rej:"):
-            bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
-
-        elif d == "buy:100": buy_stars(uid, cid, 100)
-        elif d == "buy:500": buy_stars(uid, cid, 500)
-        elif d == "pv:profile": toggle_pv(uid, cid, "profile_visible", mid)
-        elif d == "pv:location": toggle_pv(uid, cid, "location_visible", mid)
-        elif d == "photo:ask": states[uid] = {"step": "photo"}; bot.send_message(cid, "📸 عکس بفرست:")
-        elif d == "del:ask":
-            kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("✅ بله", callback_data="del:yes"), types.InlineKeyboardButton("❌ نه", callback_data="menu_home"))
-            bot.edit_message_text("همه داده‌ها پاک میشه. مطمئنی؟", chat_id=cid, message_id=mid, reply_markup=kb)
-        elif d == "del:yes": del_account(uid, cid)
-        elif d == "menu_home": bot.delete_message(cid, mid); bot.send_message(cid, "منوی اصلی", reply_markup=main_menu_kb())
-        
-        bot.answer_callback_query(c.id)
-    except: pass
-
-@app.route("/")
-@app.route("/health")
-def health(): return "OK", 200
-
-def run():
-    try: init_db()
-    except Exception as e: logger.error("init fail: %s", e)
-    try: bot.delete_webhook(drop_pending_updates=True); logger.info("Webhook deleted")
-    except Exception as e: logger.error("delete_webhook fail: %s", e)
-    while True:
-        try: bot.infinity_polling(timeout=30, long_polling_timeout=25)
-        except Exception as e: logger.error("poll fail: %s", e); time.sleep(5)
-
-if __name__ == "__main__":
-    threading.Thread(target=run, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+        # --- Menu Han
