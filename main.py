@@ -81,6 +81,14 @@ def settings_kb(uid):
     kb.add(types.InlineKeyboardButton("🗑 حذف حساب", callback_data="del:ask"))
     return kb
 
+def wallet_kb():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🎁 معرفی به دوستان (سکه رایگان)", callback_data="wallet:invite"))
+    kb.add(types.InlineKeyboardButton("💳 خرید با تومان", callback_data="wallet:buy_toman"))
+    kb.add(types.InlineKeyboardButton("💫 پرداخت با ستاره تلگرام", callback_data="wallet:buy_stars"))
+    kb.add(types.InlineKeyboardButton("👑 خرید VIP", callback_data="wallet:vip"))
+    return kb
+
 def finish_reg(uid, cid):
     d = states.pop(uid, None)
     conn = db(); cur = conn.cursor()
@@ -220,6 +228,26 @@ def send_req(uid, tid, cid, text, rtype):
     else: bot.send_message(tid, f"💬 درخواست چت از {uid}:\n\n{text}", reply_markup=kb)
     bot.send_message(cid, "درخواست ارسال شد.")
 
+def wallet_toman_kb():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🪙 ۵۰ سکه | ۱۰۰,۰۰۰ تومان", callback_data="pay:toman:50"))
+    kb.add(types.InlineKeyboardButton("🪙 ۱۰۰ سکه | ۲۰۰,۰۰۰ تومان", callback_data="pay:toman:100"))
+    kb.add(types.InlineKeyboardButton("🪙 ۵۰۰ سکه | ۵۰۰,۰۰۰ تومان", callback_data="pay:toman:500"))
+    kb.add(types.InlineKeyboardButton("🪙 ۷۰۰ سکه | ۷۰۰,۰۰۰ تومان", callback_data="pay:toman:700"))
+    kb.add(types.InlineKeyboardButton("🪙 ۱۰۰۰ سکه | ۱,۵۰۰,۰۰۰ تومان", callback_data="pay:toman:1000"))
+    kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="wallet:home"))
+    return kb
+
+def wallet_stars_kb():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✨ ۵۰ سکه | ۵۰ ستاره", callback_data="pay:stars:50"))
+    kb.add(types.InlineKeyboardButton("✨ ۱۰۰ سکه | ۷۰ ستاره", callback_data="pay:stars:100"))
+    kb.add(types.InlineKeyboardButton("✨ ۵۰۰ سکه | ۲۰۰ ستاره", callback_data="pay:stars:500"))
+    kb.add(types.InlineKeyboardButton("✨ ۷۰۰ سکه | ۳۵۰ ستاره", callback_data="pay:stars:700"))
+    kb.add(types.InlineKeyboardButton("✨ ۱۰۰۰ سکه | ۵۰۰ ستاره", callback_data="pay:stars:1000"))
+    kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="wallet:home"))
+    return kb
+
 @bot.message_handler(commands=["start"])
 def c_start(m):
     uid = m.from_user.id
@@ -271,8 +299,9 @@ def c_text(m):
     elif t == "👤 پروفایل من": show_profile(m.chat.id, uid)
     elif t == "⚙️ تنظیمات": bot.send_message(m.chat.id, "⚙️ تنظیمات:", reply_markup=settings_kb(uid))
     elif t == "🪙 کیف پول":
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("➕ ۱۰۰ سکه", callback_data="buy:100"))
-        bot.send_message(m.chat.id, f"🪙 موجودی: {get_user(uid)['stars']}", reply_markup=kb)
+        u = get_user(uid)
+        text = f"💰 شما {u['stars']} سکه در حساب خود دارید.\n\nراه‌های زیادی برای دریافت سکه بیشتر وجود داره. می‌تونی از لیست زیر یکی رو انتخاب کنی:"
+        bot.send_message(m.chat.id, text, reply_markup=wallet_kb())
     elif t == "🔗 دعوت دوستان":
         try: bot.send_message(m.chat.id, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
         except: pass
@@ -293,9 +322,24 @@ def c_cb(c):
             start_chat(uid, int(d.split(":")[1]), cid)
             bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
         elif d.startswith("rej:"): bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
-        elif d == "buy:100":
-            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET stars = stars + 100 WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
-            bot.answer_callback_query(c.id, "۱۰۰ سکه اضافه شد!")
+        
+        # Wallet Callbacks
+        elif d == "wallet:home":
+            u = get_user(uid)
+            text = f"💰 شما {u['stars']} سکه در حساب خود دارید.\n\nراه‌های زیادی برای دریافت سکه بیشتر وجود داره. می‌تونی از لیست زیر یکی رو انتخاب کنی:"
+            bot.edit_message_text(text, chat_id=cid, message_id=mid, reply_markup=wallet_kb())
+        elif d == "wallet:invite":
+            try: bot.send_message(cid, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
+            except: pass
+        elif d == "wallet:buy_toman":
+            bot.edit_message_text("💳 لطفاً یکی از بسته‌های زیر را انتخاب کنید:", chat_id=cid, message_id=mid, reply_markup=wallet_toman_kb())
+        elif d == "wallet:buy_stars":
+            bot.edit_message_text("💫 لطفاً یکی از بسته‌های زیر را انتخاب کنید:", chat_id=cid, message_id=mid, reply_markup=wallet_stars_kb())
+        elif d == "wallet:vip":
+            bot.edit_message_text("👑 خرید VIP\n\nبا خرید VIP، امکانات ویژه‌ای دریافت می‌کنید.\n\nقیمت: ۲,۵۰۰,۰۰۰ تومان یا ۷۰۰ ستاره\n\n(درگاه پرداخت در حال راه‌اندازی است)", chat_id=cid, message_id=mid)
+        elif d.startswith("pay:"):
+            bot.answer_callback_query(c.id, "درگاه پرداخت در حال راه‌اندازی است. به زودی...", show_alert=True)
+            
         elif d == "pv:profile": toggle_pv(uid, cid, "profile_visible", mid)
         elif d == "pv:location": toggle_pv(uid, cid, "location_visible", mid)
         elif d == "photo:ask": states[uid] = {"step": "photo"}; bot.send_message(cid, "📸 عکس بفرست:")
