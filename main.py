@@ -32,14 +32,17 @@ def db():
 def init_db():
     conn = db(); cur = conn.cursor()
     try:
-        cur.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, nickname TEXT, age INTEGER, gender TEXT, city TEXT, bio TEXT, lat DOUBLE PRECISION, lon DOUBLE PRECISION, stars INTEGER DEFAULT 6)")
+        cur.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, nickname TEXT, age INTEGER, gender TEXT, city TEXT, bio TEXT, lat DOUBLE PRECISION, lon DOUBLE PRECISION, stars INTEGER DEFAULT 6, profile_visible BOOLEAN DEFAULT TRUE, location_visible BOOLEAN DEFAULT TRUE)")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS stars INTEGER DEFAULT 6")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_visible BOOLEAN DEFAULT TRUE")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS location_visible BOOLEAN DEFAULT TRUE")
         cur.execute("CREATE TABLE IF NOT EXISTS likes (user_id BIGINT, target_id BIGINT, PRIMARY KEY (user_id, target_id))")
         cur.execute("CREATE TABLE IF NOT EXISTS passes (user_id BIGINT, target_id BIGINT, PRIMARY KEY (user_id, target_id))")
         cur.execute("CREATE TABLE IF NOT EXISTS matches (user1 BIGINT, user2 BIGINT, PRIMARY KEY (user1, user2))")
         cur.execute("CREATE TABLE IF NOT EXISTS blocks (user_id BIGINT, blocked_id BIGINT, PRIMARY KEY (user_id, blocked_id))")
         cur.execute("CREATE TABLE IF NOT EXISTS reports (id SERIAL PRIMARY KEY, reporter_id BIGINT, target_id BIGINT, reason TEXT)")
         cur.execute("CREATE TABLE IF NOT EXISTS chats (user1 BIGINT, user2 BIGINT, active BOOLEAN DEFAULT TRUE, PRIMARY KEY (user1, user2))")
+        cur.execute("CREATE TABLE IF NOT EXISTS referrals (referrer_id BIGINT, referred_id BIGINT UNIQUE)")
         conn.commit()
         logger.info("DB ready")
     except Exception as e:
@@ -62,7 +65,9 @@ def is_reg(uid):
 def menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("🔎 جستجو", "👤 پروفایل")
-    kb.row("❤️ مچ‌ها", "⚙️ تنظیمات")
+    kb.row("❤️ مچ‌ها", "⭐ ستاره‌ها")
+    kb.row("🔗 دعوت", "⚙️ تنظیمات")
+    kb.row("📍 ارسال موقعیت", "☎️ پشتیبانی")
     return kb
 
 def profile_kb(tid):
@@ -71,6 +76,13 @@ def profile_kb(tid):
            types.InlineKeyboardButton("👎 رد", callback_data=f"pass:{tid}"))
     kb.row(types.InlineKeyboardButton("🚫 بلاک", callback_data=f"block:{tid}"),
            types.InlineKeyboardButton("⚠️ گزارش", callback_data=f"report:{tid}"))
+    return kb
+
+def settings_kb():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("نمایش پروفایل", callback_data="pv:profile"))
+    kb.add(types.InlineKeyboardButton("نمایش موقعیت", callback_data="pv:location"))
+    kb.add(types.InlineKeyboardButton("🗑 حذف حساب", callback_data="del:ask"))
     return kb
 
 def start_reg(msg):
@@ -96,8 +108,36 @@ def finish_reg(uid):
 
 def show_profile(cid, uid):
     u = get_user(uid)
+    if not u:
+        bot.send_message(cid, "هنوز ثبت‌نام نکردی. /start بزن.")
+        return
+    bot.send_message(cid, f"👤 {u['nickname']}\n🎂 {u['age']}\n⚧ {u['gender']}\n📍 {u['city']}\n📝 {u['bio']}\n⭐ {u['stars']}")
+
+def show_stars(cid, uid):
+    u = get_user(uid)
     if not u: return
-    bot.send_message(cid, f"👤 {u['nickname']}\n🎂 {u['age']}\n⚧ {u['gender']}\n📍 {u['city']}\n📝 {u['bio']}")
+    bot.send_message(cid, f"⭐ موجودی: {u['stars']}")
+
+def show_settings(cid, uid):
+    u = get_user(uid)
+    if not u: return
+    bot.send_message(cid, "⚙️ تنظیمات:", reply_markup=settings_kb())
+
+def toggle_pv(uid, cid, field):
+    if field not in ("profile_visible", "location_visible"): return
+    conn = db(); cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT {field} FROM users WHERE user_id=%s", (uid,))
+        r = cur.fetchone()
+        if not r: return
+        nv = not bool(r[field])
+        cur.execute(f"UPDATE users SET {field}=%s WHERE user_id=%s", (nv, uid))
+        conn.commit()
+        bot.send_message(cid, f"{'روشن' if nv else 'خاموش'} شد.")
+    except Exception as e:
+        conn.rollback(); logger.error("pv fail: %s", e)
+    finally:
+        cur.close(); conn.close()
 
 def dist(a,b,c,d):
     R=6371; dl=math.radians(c-a); dn=math.radians(d-b)
@@ -112,7 +152,8 @@ def find(cid, uid):
     conn = db(); cur = conn.cursor()
     try:
         cur.execute("""SELECT * FROM users WHERE user_id!=%s AND nickname IS NOT NULL
-            AND lat IS NOT NULL AND user_id NOT IN (SELECT target_id FROM passes WHERE user_id=%s)
+            AND profile_visible=TRUE AND lat IS NOT NULL
+            AND user_id NOT IN (SELECT target_id FROM passes WHERE user_id=%s)
             AND user_id NOT IN (SELECT target_id FROM likes WHERE user_id=%s)
             AND user_id NOT IN (SELECT blocked_id FROM blocks WHERE user_id=%s)
             AND user_id NOT IN (SELECT user_id FROM blocks WHERE blocked_id=%s)""",
@@ -243,71 +284,161 @@ def report(uid, tid, reason, cid):
     finally:
         cur.close(); conn.close()
     bot.send_message(cid, "گزارش ثبت شد.")
+    if ADMIN_ID:
+        try: bot.send_message(ADMIN_ID, f"⚠️ گزارش از {uid} به {tid}\n{reason}")
+        except: pass
+
+def del_account(uid, cid):
+    conn = db(); cur = conn.cursor()
+    try:
+        for t, a, b in [("likes","user_id","target_id"),("passes","user_id","target_id"),
+                        ("matches","user1","user2"),("blocks","user_id","blocked_id"),
+                        ("chats","user1","user2"),("referrals","referrer_id","referred_id")]:
+            cur.execute(f"DELETE FROM {t} WHERE {a}=%s OR {b}=%s", (uid, uid))
+        cur.execute("DELETE FROM reports WHERE reporter_id=%s OR target_id=%s", (uid, uid))
+        cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback(); logger.error("del fail: %s", e)
+        bot.send_message(cid, "حذف ناموفق."); return
+    finally:
+        cur.close(); conn.close()
+    states.pop(uid, None)
+    bot.send_message(cid, "حساب حذف شد.", reply_markup=types.ReplyKeyboardRemove())
+
+def invite(cid, uid):
+    try:
+        me = bot.get_me()
+        bot.send_message(cid, f"🔗 لینک دعوت:\nhttps://t.me/{me.username}?start=ref_{uid}\n\nهر ثبت‌نام ۱۰ ستاره.")
+    except Exception as e:
+        logger.error("invite fail: %s", e)
+        bot.send_message(cid, "خطا در ساخت لینک.")
+
+def support_start(uid, cid):
+    states[uid] = {"step": "support"}
+    bot.send_message(cid, "پیامت رو بنویس. /cancel برای انصراف.")
+
+def support_send(msg):
+    uid = msg.from_user.id
+    if not ADMIN_ID:
+        bot.send_message(msg.chat.id, "پشتیبانی فعال نیست.")
+        states.pop(uid, None); return
+    try:
+        bot.send_message(ADMIN_ID, f"📩 پشتیبانی از {uid}:\n{msg.text or ''}")
+        bot.send_message(msg.chat.id, "ارسال شد.")
+    except:
+        bot.send_message(msg.chat.id, "ارسال نشد.")
+    states.pop(uid, None)
+
+def loc_request(cid):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(types.KeyboardButton("📍 ارسال موقعیت", request_location=True))
+    bot.send_message(cid, "دکمه زیر رو بزن:", reply_markup=kb)
 
 @bot.message_handler(commands=["start"])
 def c_start(m):
-    if is_reg(m.from_user.id):
-        bot.send_message(m.chat.id, "خوش برگشتی ❤️", reply_markup=menu())
-    else:
-        start_reg(m)
+    try:
+        uid = m.from_user.id
+        ref = None
+        parts = (m.text or "").split()
+        if len(parts) > 1 and parts[1].startswith("ref_"):
+            try: ref = int(parts[1][4:])
+            except: pass
+        if is_reg(uid):
+            bot.send_message(m.chat.id, "خوش برگشتی ❤️", reply_markup=menu()); return
+        states[uid] = {"step": "nickname", "ref": ref}
+        bot.send_message(m.chat.id, "سلام! اسم نمایشی‌ت چیه؟")
+    except Exception as e:
+        logger.error("start fail: %s", e)
 
 @bot.message_handler(commands=["myid"])
 def c_myid(m):
-    bot.send_message(m.chat.id, f"chat_id: {m.chat.id}\nuser_id: {m.from_user.id}")
+    try:
+        bot.send_message(m.chat.id, f"chat_id: {m.chat.id}\nuser_id: {m.from_user.id}")
+    except Exception as e:
+        logger.error("myid fail: %s", e)
 
 @bot.message_handler(commands=["stop"])
 def c_stop(m):
-    stop_chat(m.from_user.id, m.chat.id)
+    try: stop_chat(m.from_user.id, m.chat.id)
+    except Exception as e: logger.error("stop fail: %s", e)
+
+@bot.message_handler(commands=["cancel"])
+def c_cancel(m):
+    try:
+        states.pop(m.from_user.id, None)
+        bot.send_message(m.chat.id, "لغو شد.", reply_markup=menu())
+    except Exception as e: logger.error("cancel fail: %s", e)
 
 @bot.message_handler(content_types=["location"])
 def c_loc(m):
-    if not is_reg(m.from_user.id): return
-    conn = db(); cur = conn.cursor()
     try:
-        cur.execute("UPDATE users SET lat=%s, lon=%s WHERE user_id=%s",
-                    (m.location.latitude, m.location.longitude, m.from_user.id))
-        conn.commit()
-    finally:
-        cur.close(); conn.close()
-    bot.send_message(m.chat.id, "📍 ثبت شد.")
-    find(m.chat.id, m.from_user.id)
+        uid = m.from_user.id
+        if not is_reg(uid):
+            bot.send_message(m.chat.id, "اول ثبت‌نام کن."); return
+        conn = db(); cur = conn.cursor()
+        try:
+            cur.execute("UPDATE users SET lat=%s, lon=%s WHERE user_id=%s",
+                        (m.location.latitude, m.location.longitude, uid))
+            conn.commit()
+        finally:
+            cur.close(); conn.close()
+        bot.send_message(m.chat.id, "📍 ثبت شد.", reply_markup=menu())
+        find(m.chat.id, uid)
+    except Exception as e:
+        logger.error("loc fail: %s", e)
 
 @bot.message_handler(content_types=["text"])
 def c_text(m):
-    uid = m.from_user.id; t = (m.text or "").strip()
-    s = states.get(uid)
-    if s:
-        st = s["step"]
-        if st == "nickname":
-            s["nickname"] = t[:50]; s["step"] = "age"
-            bot.send_message(m.chat.id, "چند سالته؟ (۱۸+)"); return
-        if st == "age":
-            try: a = int(t)
-            except: bot.send_message(m.chat.id, "عدد بنویس."); return
-            if a < 18: bot.send_message(m.chat.id, "فقط ۱۸+."); return
-            s["age"] = a; s["step"] = "gender"
-            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            kb.row("پسر","دختر")
-            bot.send_message(m.chat.id, "جنسیت؟", reply_markup=kb); return
-        if st == "gender":
-            s["gender"] = t; s["step"] = "city"
-            bot.send_message(m.chat.id, "شهر؟", reply_markup=types.ReplyKeyboardRemove()); return
-        if st == "city":
-            s["city"] = t[:50]; s["step"] = "bio"
-            bot.send_message(m.chat.id, "بیو:"); return
-        if st == "bio":
-            s["bio"] = t[:300]; finish_reg(uid); return
-    if t == "🔎 جستجو": find(m.chat.id, uid)
-    elif t == "👤 پروفایل": show_profile(m.chat.id, uid)
-    elif t == "❤️ مچ‌ها": show_matches(m.chat.id, uid)
-    elif t == "⚙️ تنظیمات": bot.send_message(m.chat.id, "تنظیمات بعداً اضافه می‌شه.")
-    elif relay(m): return
-    else: bot.send_message(m.chat.id, "از منو انتخاب کن.", reply_markup=menu())
+    try:
+        uid = m.from_user.id
+        t = (m.text or "").strip()
+        s = states.get(uid)
+        if s:
+            st = s["step"]
+            if st == "nickname":
+                s["nickname"] = t[:50]; s["step"] = "age"
+                bot.send_message(m.chat.id, "چند سالته؟ (۱۸+)"); return
+            if st == "age":
+                try: a = int(t)
+                except: bot.send_message(m.chat.id, "عدد بنویس."); return
+                if a < 18: bot.send_message(m.chat.id, "فقط ۱۸+."); return
+                s["age"] = a; s["step"] = "gender"
+                kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                kb.row("پسر","دختر")
+                bot.send_message(m.chat.id, "جنسیت؟", reply_markup=kb); return
+            if st == "gender":
+                s["gender"] = t; s["step"] = "city"
+                bot.send_message(m.chat.id, "شهر؟", reply_markup=types.ReplyKeyboardRemove()); return
+            if st == "city":
+                s["city"] = t[:50]; s["step"] = "bio"
+                bot.send_message(m.chat.id, "بیو:"); return
+            if st == "bio":
+                s["bio"] = t[:300]
+                finish_reg(uid); return
+            if st == "support":
+                support_send(m); return
+            if st == "report":
+                tid = s.get("tid"); states.pop(uid, None)
+                report(uid, tid, t[:300], m.chat.id); return
+        if t == "🔎 جستجو": find(m.chat.id, uid)
+        elif t == "👤 پروفایل": show_profile(m.chat.id, uid)
+        elif t == "❤️ مچ‌ها": show_matches(m.chat.id, uid)
+        elif t == "⭐ ستاره‌ها": show_stars(m.chat.id, uid)
+        elif t == "🔗 دعوت": invite(m.chat.id, uid)
+        elif t == "⚙️ تنظیمات": show_settings(m.chat.id, uid)
+        elif t == "📍 ارسال موقعیت": loc_request(m.chat.id)
+        elif t == "☎️ پشتیبانی": support_start(uid, m.chat.id)
+        elif relay(m): return
+        else: bot.send_message(m.chat.id, "از منو انتخاب کن.", reply_markup=menu())
+    except Exception as e:
+        logger.error("text fail: %s", e)
 
 @bot.callback_query_handler(func=lambda c: True)
 def c_cb(c):
-    d = c.data or ""; uid = c.from_user.id; cid = c.message.chat.id
     try:
+        d = c.data or ""; uid = c.from_user.id
+        cid = c.message.chat.id if c.message else uid
         if d.startswith("like:"): like(uid, int(d.split(":")[1]), cid)
         elif d.startswith("pass:"): pass_user(uid, int(d.split(":")[1]), cid)
         elif d.startswith("block:"): block(uid, int(d.split(":")[1]), cid)
@@ -315,6 +446,15 @@ def c_cb(c):
             states[uid] = {"step": "report", "tid": int(d.split(":")[1])}
             bot.send_message(cid, "دلیل گزارش:")
         elif d.startswith("chat:"): start_chat(uid, int(d.split(":")[1]), cid)
+        elif d == "pv:profile": toggle_pv(uid, cid, "profile_visible")
+        elif d == "pv:location": toggle_pv(uid, cid, "location_visible")
+        elif d == "del:ask":
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("✅ بله", callback_data="del:yes"))
+            kb.add(types.InlineKeyboardButton("❌ انصراف", callback_data="del:no"))
+            bot.send_message(cid, "همه‌ی داده‌هات پاک می‌شه. مطمئنی؟", reply_markup=kb)
+        elif d == "del:yes": del_account(uid, cid)
+        elif d == "del:no": bot.send_message(cid, "لغو شد.")
         bot.answer_callback_query(c.id)
     except Exception as e:
         logger.error("cb fail: %s", e)
