@@ -378,4 +378,82 @@ def c_text(m):
             bot.send_message(m.chat.id, "جنسیت؟", reply_markup=kb); return
         if st == "gender": s["gender"] = t; s["step"] = "province"; bot.send_message(m.chat.id, "استان؟"); return
         if st == "province": s["province"] = t[:50]; s["step"] = "city"; bot.send_message(m.chat.id, "شهر؟"); return
-        if st == "city": s["city"] = t[:50]; s["step"] = "bio"; bot.send_messa
+        if st == "city": s["city"] = t[:50]; s["step"] = "bio"; bot.send_message(m.chat.id, "بیو:"); return
+        if st == "bio": s["bio"] = t[:300]; finish_reg(uid, m.chat.id); return
+        if st == "direct_msg": tid = s.get("tid"); states.pop(uid, None); send_req(uid, tid, m.chat.id, t, "direct"); return
+        if st == "req_msg": tid = s.get("tid"); states.pop(uid, None); send_req(uid, tid, m.chat.id, t, "chat"); return
+        if st in ["filt_min_age", "filt_max_age"]:
+            try: val = int(t)
+            except: return
+            if val < 18 or val > 99: return
+            col = "req_min_age" if st == "filt_min_age" else "req_max_age"
+            conn = db(); cur = conn.cursor(); cur.execute(f"UPDATE users SET {col}=%s WHERE user_id=%s", (val, uid)); conn.commit(); cur.close(); conn.close()
+            states.pop(uid, None)
+            bot.send_message(m.chat.id, "✅ سن به‌روزرسانی شد.")
+            return
+    if relay(m): return
+    if t == "🔍 جستجوی افراد": find(m.chat.id, uid)
+    elif t == "👥 مخاطبین من": show_contacts(m.chat.id, uid)
+    elif t == "👤 پروفایل من": show_profile(m.chat.id, uid)
+    elif t == "🪙 کیف پول":
+        u = get_user(uid)
+        text = f"💰 شما {u['stars']} سکه در حساب خود دارید.\n\nراه‌های زیادی برای دریافت سکه بیشتر وجود داره. می‌تونی از لیست زیر یکی رو انتخاب کنی:"
+        bot.send_message(m.chat.id, text, reply_markup=wallet_kb())
+    elif t == "🔗 دعوت دوستان":
+        try: bot.send_message(m.chat.id, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
+        except: pass
+    else: bot.send_message(m.chat.id, "متوجه نشدم! از منو استفاده کن.", reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: True)
+def c_cb(c):
+    d = c.data or ""; uid = c.from_user.id; cid = c.message.chat.id if c.message else uid; mid = c.message.message_id if c.message else None
+    try:
+        if d.startswith("like:"): like(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("pass:"): pass_user(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("block:"): block(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("add:"): add_contact(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("view:"): show_profile(cid, uid, target_id=int(d.split(":")[1]))
+        elif d.startswith("dir:"): process_req(uid, int(d.split(":")[1]), cid, "direct")
+        elif d.startswith("req:"): process_req(uid, int(d.split(":")[1]), cid, "chat")
+        elif d.startswith("appr:"): start_chat(uid, int(d.split(":")[1]), cid); bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
+        elif d.startswith("rej:"): bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
+        
+        elif d == "settings:home": bot.edit_message_text("⚙️ تنظیمات:", chat_id=cid, message_id=mid, reply_markup=settings_kb(uid))
+        elif d == "pv:profile": toggle_setting(uid, cid, "profile_visible", mid)
+        elif d == "pv:location": toggle_setting(uid, cid, "location_visible", mid)
+        elif d == "pv:alarm": toggle_setting(uid, cid, "alarm_seen", mid)
+        elif d == "pv:silent":
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET silent_until=CURRENT_TIMESTAMP + interval '1 day' WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+            bot.edit_message_text("حالت سایلنت برای ۲۴ ساعت فعال شد.", chat_id=cid, message_id=mid)
+        elif d == "filter:req": bot.edit_message_text("🎯 تنظیمات فیلتر درخواست‌ها:", chat_id=cid, message_id=mid, reply_markup=req_filter_kb(uid))
+        elif d == "filt:gender":
+            u = get_user(uid); curr = u["req_gender"]
+            new_g = "دختر" if curr=="any" else ("پسر" if curr=="دختر" else "any")
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET req_gender=%s WHERE user_id=%s", (new_g, uid)); conn.commit(); cur.close(); conn.close()
+            bot.edit_message_reply_markup(cid, mid, reply_markup=req_filter_kb(uid))
+        elif d == "filt:prov": toggle_setting(uid, cid, "req_province", mid); bot.edit_message_reply_markup(cid, mid, reply_markup=req_filter_kb(uid))
+        elif d == "filt:city": toggle_setting(uid, cid, "req_city", mid); bot.edit_message_reply_markup(cid, mid, reply_markup=req_filter_kb(uid))
+        elif d == "filt:minage": states[uid] = {"step": "filt_min_age"}; bot.send_message(cid, "حداقل سن (۱۸-۹۹):")
+        elif d == "filt:maxage": states[uid] = {"step": "filt_max_age"}; bot.send_message(cid, "حداکثر سن (۱۸-۹۹):")
+        
+        elif d == "photo:ask": states[uid] = {"step": "photo"}; bot.send_message(cid, "📸 عکس بفرست:")
+        elif d == "del:ask":
+            kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("✅ بله", callback_data="del:yes"))
+            bot.edit_message_text("مطمئنی؟", chat_id=cid, message_id=mid, reply_markup=kb)
+        elif d == "del:yes":
+            conn = db(); cur = conn.cursor()
+            for tbl, cl1, cl2 in [("likes","user_id","target_id"),("passes","user_id","target_id"),("blocks","user_id","blocked_id"),("chats","user1","user2"),("contacts","user_id","contact_id"),("direct_requests","sender_id","receiver_id")]:
+                cur.execute(f"DELETE FROM {tbl} WHERE {cl1}=%s OR {cl2}=%s", (uid, uid))
+            cur.execute("DELETE FROM users WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+            bot.send_message(cid, "حساب حذف شد.", reply_markup=types.ReplyKeyboardRemove())
+            
+        elif d == "wallet:home":
+            u = get_user(uid); text = f"💰 شما {u['stars']} سکه در حساب خود دارید.\n\nراه‌های زیادی برای دریافت سکه بیشتر وجود داره. می‌تونی از لیست زیر یکی رو انتخاب کنی:"
+            bot.edit_message_text(text, chat_id=cid, message_id=mid, reply_markup=wallet_kb())
+        elif d == "wallet:invite":
+            try: bot.send_message(cid, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
+            except: pass
+        elif d == "wallet:buy_toman": bot.edit_message_text("💳 بسته‌های تومانی:", chat_id=cid, message_id=mid, reply_markup=wallet_toman_kb())
+        elif d == "wallet:buy_stars": bot.edit_message_text("💫 بسته‌های ستاره:", chat_id=cid, message_id=mid, reply_markup=wallet_stars_kb())
+        elif d == "wallet:vip": bot.edit_message_text("👑 خرید VIP\n\nبا خرید VIP امکانات ویژه دریافت می‌کنید.\n\nقیمت: ۲,۵۰۰,۰۰۰ تومان یا ۷۰۰ ستاره\n\n(درگاه پرداخت در حال راه‌اندازی است)", chat_id=cid, message_id=mid)
+        elif d.startswith("pay:"): bot
