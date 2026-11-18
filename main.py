@@ -360,23 +360,185 @@ def c_text(m):
             if val < 18 or val > 99: return
             col = "req_min_age" if st == "filt_min_age" else "req_max_age"
             conn = db(); cur = conn.cursor(); cur.execute(f"UPDATE users SET {col}=%s WHERE user_id=%s", (val, uid)); conn.commit(); cur.close(); conn.close()
-            states.pop(uid, None); bot.send_message(m.chat.id, "✅ به‌روزر
-            elif d.startswith("pay:"): 
-                bot.answer_callback_query(c.id, "درگاه پرداخت در حال راه‌اندازی است.", show_alert=True)
+            states.pop(uid, None)
+            bot.send_message(m.chat.id, "✅ به‌روزرسانی شد.")
+            return
             
-            bot.answer_callback_query(c.id)
+    if relay(m): return
+    if t == "🔍 جستجوی افراد": find(m.chat.id, uid)
+    elif t == "👥 مخاطبین من": show_contacts(m.chat.id, uid)
+    elif t == "👤 پروفایل من": show_profile(m.chat.id, uid)
+    elif t == "🪙 کیف پول":
+        u = get_user(uid)
+        txt = "💰 شما " + str(u['stars']) + " سکه دارید.\n\nاز لیست زیر انتخاب کنید:"
+        bot.send_message(m.chat.id, txt, reply_markup=wallet_kb())
+    elif t == "🔗 دعوت دوستان":
+        try: bot.send_message(m.chat.id, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
         except: pass
+    else: bot.send_message(m.chat.id, "متوجه نشدم! از منو استفاده کن.", reply_markup=main_menu_kb())
+
+@bot.callback_query_handler(func=lambda c: True)
+def c_cb(c):
+    d = c.data or ""; uid = c.from_user.id; cid = c.message.chat.id if c.message else uid; mid = c.message.message_id if c.message else None
+    try:
+        if d.startswith("like:"): like(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("pass:"): pass_user(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("block:"): block(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("add:"): add_contact(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("view:"): show_profile(cid, uid, target_id=int(d.split(":")[1]))
+        elif d.startswith("dir:"): process_req(uid, int(d.split(":")[1]), cid, "direct")
+        elif d.startswith("req:"): process_req(uid, int(d.split(":")[1]), cid, "chat")
+        elif d.startswith("appr:"): 
+            start_chat(uid, int(d.split(":")[1]), cid)
+            bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
+        elif d.startswith("rej:"): 
+            bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
+        
+        elif d == "settings:main":
+            bot.send_message(cid, "⚙️ منوی تنظیمات:\nلطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=settings_main_kb())
+            
+        elif d == "set:privacy":
+            u = get_user(uid)
+            pv = "✅" if u["profile_visible"] else "❌"
+            als = "✅" if u.get("alarm_seen") else "❌"
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton(f"{pv} نمایش پروفایل", callback_data="pv:profile"), types.InlineKeyboardButton(f"{als} آلارم بازدید", callback_data="pv:alarm"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("👤 حریم خصوصی:", chat_id=cid, message_id=mid, reply_markup=kb)
+            
+        elif d == "set:filter":
+            u = get_user(uid)
+            g = "همه" if u['req_gender']=="any" else u['req_gender']
+            p = "✅" if u['req_province'] else "❌"
+            c = "✅" if u['req_city'] else "❌"
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton(f"جنسیت: {g}", callback_data="filt:gender"))
+            kb.row(types.InlineKeyboardButton(f"{p} هم‌استانی", callback_data="filt:prov"), types.InlineKeyboardButton(f"{c} هم‌شهری", callback_data="filt:city"))
+            kb.row(types.InlineKeyboardButton(f"حداقل سن: {u['req_min_age']}", callback_data="filt:minage"), types.InlineKeyboardButton(f"حداکثر سن: {u['req_max_age']}", callback_data="filt:maxage"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("📩 فیلتر درخواست‌ها:", chat_id=cid, message_id=mid, reply_markup=kb)
+            
+        elif d == "set:silent":
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton("۱ ساعت", callback_data="sil:1h"), types.InlineKeyboardButton("۲۴ ساعت", callback_data="sil:24h"))
+            kb.row(types.InlineKeyboardButton("دائم", callback_data="sil:forever"), types.InlineKeyboardButton("❌ غیرفعال", callback_data="sil:off"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("🔕 حالت سایلنت:", chat_id=cid, message_id=mid, reply_markup=kb)
+            
+        elif d == "set:edit":
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton("تغییر سن", callback_data="edit:age"), types.InlineKeyboardButton("تغییر جنسیت", callback_data="edit:gender"))
+            kb.row(types.InlineKeyboardButton("تغییر استان", callback_data="edit:prov"), types.InlineKeyboardButton("تغییر شهر", callback_data="edit:city"))
+            kb.add(types.InlineKeyboardButton("📸 تغییر عکس", callback_data="photo:ask"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("✏️ ویرایش پروفایل:", chat_id=cid, message_id=mid, reply_markup=kb)
+            
+        elif d == "set:loc":
+            bot.send_message(cid, "📍 لطفاً موقعیت جغرافیایی جدید خود را ارسال کنید:", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton("📍 ارسال موقعیت", request_location=True)))
+            
+        elif d == "set:del":
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton("💳 ۲۰۰,۰۰۰ تومان", callback_data="del:toman"), types.InlineKeyboardButton("⭐ ۲۵ ستاره", callback_data="del:star"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("🗑 حذف حساب:\nبرای حذف حساب باید یکی از روش‌های زیر را انتخاب کنید:\n(درگاه تومان به زودی)", chat_id=cid, message_id=mid, reply_markup=kb)
+            
+        elif d == "del:star":
+            u = get_user(uid)
+            if u["stars"] >= 25:
+                conn = db(); cur = conn.cursor()
+                cur.execute("UPDATE users SET stars = stars - 25 WHERE user_id=%s", (uid,)); conn.commit()
+                for tbl, cl1, cl2 in [("likes","user_id","target_id"),("passes","user_id","target_id"),("blocks","user_id","blocked_id"),("chats","user1","user2"),("contacts","user_id","contact_id"),("direct_requests","sender_id","receiver_id")]:
+                    cur.execute(f"DELETE FROM {tbl} WHERE {cl1}=%s OR {cl2}=%s", (uid, uid))
+                cur.execute("DELETE FROM users WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+                bot.send_message(cid, "حساب شما حذف شد.", reply_markup=types.ReplyKeyboardRemove())
+            else:
+                bot.answer_callback_query(c.id, "❌ شما ۲۵ ستاره ندارید.", show_alert=True)
+                
+        elif d == "del:toman":
+            bot.answer_callback_query(c.id, "درگاه پرداخت به زودی فعال می‌شود.", show_alert=True)
+
+        elif d == "pv:profile": 
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET profile_visible = NOT profile_visible WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+            bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "pv:alarm":
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET alarm_seen = NOT alarm_seen WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+            bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:gender":
+            u = get_user(uid); curr = u["req_gender"]; new_g = "دختر" if curr=="any" else ("پسر" if curr=="دختر" else "any")
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET req_gender=%s WHERE user_id=%s", (new_g, uid)); conn.commit(); cur.close(); conn.close()
+            bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:prov":
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET req_province = NOT req_province WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+            bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:city":
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET req_city = NOT req_city WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+            bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:minage": 
+            states[uid] = {"step": "filt_min_age"}
+            bot.send_message(cid, "حداقل سن (۱۸-۹۹):")
+        elif d == "filt:maxage": 
+            states[uid] = {"step": "filt_max_age"}
+            bot.send_message(cid, "حداکثر سن (۱۸-۹۹):")
+        
+        elif d.startswith("sil:"):
+            val = d.split(":")[1]
+            conn = db(); cur = conn.cursor()
+            if val == "1h": cur.execute("UPDATE users SET silent_until = CURRENT_TIMESTAMP + interval '1 hour' WHERE user_id=%s", (uid,))
+            elif val == "24h": cur.execute("UPDATE users SET silent_until = CURRENT_TIMESTAMP + interval '1 day' WHERE user_id=%s", (uid,))
+            elif val == "forever": cur.execute("UPDATE users SET silent_until = '2099-01-01' WHERE user_id=%s", (uid,))
+            elif val == "off": cur.execute("UPDATE users SET silent_until = NULL WHERE user_id=%s", (uid,))
+            conn.commit(); cur.close(); conn.close()
+            bot.answer_callback_query(c.id, "حالت سایلنت اعمال شد.")
+            
+        elif d == "edit:age": 
+            states[uid] = {"step": "edit_age"}
+            bot.send_message(cid, "سن جدید:")
+        elif d == "edit:gender": 
+            states[uid] = {"step": "edit_gender"}
+            bot.send_message(cid, "جنسیت جدید (پسر/دختر):")
+        elif d == "edit:prov": 
+            states[uid] = {"step": "edit_province"}
+            bot.send_message(cid, "استان جدید:")
+        elif d == "edit:city": 
+            states[uid] = {"step": "edit_city"}
+            bot.send_message(cid, "شهر جدید:")
+        elif d == "photo:ask": 
+            states[uid] = {"step": "photo"}
+            bot.send_message(cid, "📸 عکس جدید را بفرستید:")
+
+        elif d == "wallet:home":
+            u = get_user(uid)
+            txt = "💰 شما " + str(u['stars']) + " سکه دارید.\n\nاز لیست زیر انتخاب کنید:"
+            bot.edit_message_text(txt, chat_id=cid, message_id=mid, reply_markup=wallet_kb())
+        elif d == "wallet:invite":
+            try: bot.send_message(cid, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
+            except: pass
+        elif d == "wallet:buy_toman": 
+            bot.edit_message_text("💳 بسته‌های تومانی:", chat_id=cid, message_id=mid, reply_markup=wallet_toman_kb())
+        elif d == "wallet:buy_stars": 
+            bot.edit_message_text("💫 بسته‌های ستاره:", chat_id=cid, message_id=mid, reply_markup=wallet_stars_kb())
+        elif d == "wallet:vip": 
+            bot.edit_message_text("👑 خرید VIP\n\nقیمت: ۲,۵۰۰,۰۰۰ تومان یا ۷۰۰ ستاره\n\n(درگاه پرداخت در حال راه‌اندازی است)", chat_id=cid, message_id=mid)
+        elif d.startswith("pay:"): 
+            bot.answer_callback_query(c.id, "درگاه پرداخت در حال راه‌اندازی است.", show_alert=True)
+        
+        bot.answer_callback_query(c.id)
+    except: pass
 
 @app.route("/")
 def health(): return "OK", 200
 
 def run():
     init_db()
-    try: bot.delete_webhook(drop_pending_updates=True)
-    except: pass
+    try: 
+        bot.delete_webhook(drop_pending_updates=True)
+    except: 
+        pass
     while True:
-        try: bot.infinity_polling(timeout=30, long_polling_timeout=25)
-        except: time.sleep(5)
+        try: 
+            bot.infinity_polling(timeout=30, long_polling_timeout=25)
+        except: 
+            time.sleep(5)
 
 if __name__ == "__main__":
     threading.Thread(target=run, daemon=True).start()
