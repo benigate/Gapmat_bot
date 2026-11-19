@@ -261,4 +261,60 @@ def expire_requests():
     finally:
         cur.close()
         conn.close()
-                                                              
+def create_direct_request(sender_id, receiver_id, message):
+    conn = db()
+    cur = conn.cursor()
+
+    try:
+        # جلوگیری از ثبت هم‌زمان درخواست‌های بیش از حد
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(%s)",
+            (sender_id,)
+        )
+
+        cur.execute("""
+            SELECT COUNT(*) AS total
+            FROM direct_requests
+            WHERE sender_id = %s
+              AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 hour'
+        """, (sender_id,))
+
+        total = cur.fetchone()["total"]
+
+        if total >= 20:
+            conn.rollback()
+            return {"ok": False, "reason": "hourly_limit"}
+
+        cur.execute("""
+            INSERT INTO direct_requests (
+                sender_id,
+                receiver_id,
+                message,
+                status,
+                created_at,
+                expires_at
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                'pending',
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP + INTERVAL '5 minutes'
+            )
+            RETURNING id
+        """, (sender_id, receiver_id, message))
+
+        request_id = cur.fetchone()["id"]
+        conn.commit()
+
+        return {"ok": True, "request_id": request_id}
+
+    except Exception:
+        conn.rollback()
+        logger.exception("Creating direct request failed")
+        raise
+
+    finally:
+        cur.close()
+        conn.close()                                     
