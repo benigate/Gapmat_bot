@@ -240,7 +240,6 @@ def c_cb(c):
         elif d.startswith("appr:"): start_chat(uid, int(d.split(":")[1]), cid); bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
         elif d.startswith("rej:"): bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
         elif d == "edit:menu":
-                    elif d == "edit:menu":
             kb = types.InlineKeyboardMarkup()
             kb.row(
                 types.InlineKeyboardButton("تغییر سن (۱۰۰ سکه)", callback_data="edit:age"),
