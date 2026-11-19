@@ -240,11 +240,21 @@ def c_cb(c):
         elif d.startswith("appr:"): start_chat(uid, int(d.split(":")[1]), cid); bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
         elif d.startswith("rej:"): bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
         elif d == "edit:menu":
-            elif d == "edit:menu":
-    kb = types.InlineKeyboardMarkup()
-    kb.row(
-        types.InlineKeyboardButton("تغییر سن (۱۰۰ سکه)", callback_data="edit:age"),
-        types.InlineKeyboardButton("تغییر جنسیت (۱۰۰ سکه)", callback_data="edit:gender")
+                    elif d == "edit:menu":
+            kb = types.InlineKeyboardMarkup()
+            kb.row(
+                types.InlineKeyboardButton("تغییر سن (۱۰۰ سکه)", callback_data="edit:age"),
+                types.InlineKeyboardButton("تغییر جنسیت (۱۰۰ سکه)", callback_data="edit:gender")
+            )
+            kb.row(
+                types.InlineKeyboardButton("تغییر استان", callback_data="edit:prov"),
+                types.InlineKeyboardButton("تغییر شهر", callback_data="edit:city")
+            )
+            kb.add(types.InlineKeyboardButton("📸 افزودن عکس (رایگان)", callback_data="photo:ask"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="menu:profile"))
+
+            bot.answer_callback_query(c.id)
+            bot.send_message(cid, "✏️ ویرایش پروفایل:", reply_markup=kb)
     )
     kb.row(
         types.InlineKeyboardButton("تغییر استان", callback_data="edit:prov"),
