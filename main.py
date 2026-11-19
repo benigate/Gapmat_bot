@@ -619,6 +619,7 @@ if st == "report_reason":
                 except Exception:
                     logger.exception("Report notification to admin failed")
             return
+            
         if st == "edit_province":
             conn = db()
             cur = conn.cursor()
