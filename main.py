@@ -243,8 +243,132 @@ def c_cb(c):
         elif d.startswith("view:"): show_profile(cid, uid, target_id=int(d.split(":")[1]))
         elif d.startswith("dir:"): process_req(uid, int(d.split(":")[1]), cid, "direct")
         elif d.startswith("req:"): process_req(uid, int(d.split(":")[1]), cid, "chat")
-        elif d.startswith("appr:"): start_chat(uid, int(d.split(":")[1]), cid); bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
-        elif d.startswith("rej:"): bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
+                elif d.startswith("appr:") or d.startswith("rej:"):
+            conn = None
+            cur = None
+
+            try:
+                request_id = int(d.split(":")[1])
+
+                conn = db()
+                cur = conn.cursor()
+
+                cur.execute("""
+                    SELECT *
+                    FROM direct_requests
+                    WHERE id = %s
+                    FOR UPDATE
+                """, (request_id,))
+
+                req = cur.fetchone()
+
+                if not req:
+                    bot.answer_callback_query(
+                        c.id, "درخواست پیدا نشد.", show_alert=True
+                    )
+
+                elif req["receiver_id"] != uid:
+                    bot.answer_callback_query(
+                        c.id, "این درخواست برای شما نیست.", show_alert=True
+                    )
+
+                elif req["status"] != "pending":
+                    bot.answer_callback_query(
+                        c.id, "این درخواست قبلاً بررسی شده.", show_alert=True
+                    )
+
+                else:
+                    cur.execute("""
+                        UPDATE direct_requests
+                        SET status = 'expired'
+                        WHERE id = %s
+                          AND status = 'pending'
+                          AND expires_at <= CURRENT_TIMESTAMP
+                    """, (request_id,))
+
+                    if cur.rowcount:
+                        conn.commit()
+                        bot.answer_callback_query(
+                            c.id, "⏰ مهلت درخواست تمام شده.",
+                            show_alert=True
+                        )
+
+                    elif d.startswith("appr:"):
+                        cur.execute("""
+                            UPDATE direct_requests
+                            SET status = 'accepted'
+                            WHERE id = %s
+                              AND status = 'pending'
+                              AND expires_at > CURRENT_TIMESTAMP
+                        """, (request_id,))
+
+                        if cur.rowcount:
+                            sender = req["sender_id"]
+
+                            cur.execute("""
+                                INSERT INTO chats (user1, user2, active)
+                                VALUES (%s, %s, TRUE)
+                                ON CONFLICT (user1, user2)
+                                DO UPDATE SET active = TRUE
+                            """, (min(sender, uid), max(sender, uid)))
+
+                            conn.commit()
+
+                            bot.send_message(
+                                sender, "✅ درخواست چت پذیرفته شد."
+                            )
+                            bot.send_message(
+                                uid, "✅ درخواست را پذیرفتید."
+                            )
+                            bot.answer_callback_query(c.id, "پذیرفته شد.")
+
+                        else:
+                            conn.commit()
+                            bot.answer_callback_query(
+                                c.id, "درخواست منقضی شده.",
+                                show_alert=True
+                            )
+
+                    else:
+                        cur.execute("""
+                            UPDATE direct_requests
+                            SET status = 'rejected'
+                            WHERE id = %s
+                              AND status = 'pending'
+                              AND expires_at > CURRENT_TIMESTAMP
+                        """, (request_id,))
+
+                        if cur.rowcount:
+                            conn.commit()
+                            bot.send_message(
+                                req["sender_id"],
+                                "❌ درخواست چت رد شد."
+                            )
+                            bot.answer_callback_query(c.id, "رد شد.")
+                        else:
+                            conn.commit()
+                            bot.answer_callback_query(
+                                c.id, "درخواست منقضی شده.",
+                                show_alert=True
+                            )
+
+            except Exception:
+                if conn:
+                    conn.rollback()
+
+                logging.exception("Request processing error")
+
+                bot.answer_callback_query(
+                    c.id,
+                    "خطا در پردازش درخواست.",
+                    show_alert=True
+                )
+
+            finally:
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
         elif d == "edit:menu":
             kb = types.InlineKeyboardMarkup()
             kb.row(
