@@ -489,4 +489,24 @@ def c_cb(c):
             bot.send_message(cid, "حداقل سن (۱۸-۹۹):")
         elif d == "filt:maxage": 
             states[uid] = {"step": "filt_max_age"}
+    except: pass
+
+@app.route("/")
+def health(): return "OK", 200
+
+def run():
+    init_db()
+    try: 
+        bot.delete_webhook(drop_pending_updates=True)
+    except: 
+        pass
+    while True:
+        try: 
+            bot.infinity_polling(timeout=30, long_polling_timeout=25)
+        except: 
+            time.sleep(5)
+
+if __name__ == "__main__":
+    threading.Thread(target=run, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
            
