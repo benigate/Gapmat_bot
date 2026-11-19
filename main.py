@@ -240,9 +240,21 @@ def c_cb(c):
         elif d.startswith("appr:"): start_chat(uid, int(d.split(":")[1]), cid); bot.edit_message_text("✅ تایید شد.", chat_id=cid, message_id=mid)
         elif d.startswith("rej:"): bot.edit_message_text("❌ رد شد.", chat_id=cid, message_id=mid)
         elif d == "edit:menu":
-            kb = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("تغییر سن (۱۰۰ سکه)", callback_data="edit:age"), types.InlineKeyboardButton("تغییر جنسیت (۱۰۰ سکه)", callback_data="edit:gender")).row(types.InlineKeyboardButton("تغییر استان", callback_data="edit:prov"), types.InlineKeyboardButton("تغییر شهر", callback_data="edit:city")).add(types.InlineKeyboardButton("📸 افزودن عکس (رایگان)", callback_data="photo:ask")).add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="menu:profile"))
-            bot.edit_message_text("✏️ ویرایش پروفایل:", chat_id=cid, message_id=mid, reply_markup=kb)
-        elif d == "menu:profile": show_profile(cid, uid)
+            elif d == "edit:menu":
+    kb = types.InlineKeyboardMarkup()
+    kb.row(
+        types.InlineKeyboardButton("تغییر سن (۱۰۰ سکه)", callback_data="edit:age"),
+        types.InlineKeyboardButton("تغییر جنسیت (۱۰۰ سکه)", callback_data="edit:gender")
+    )
+    kb.row(
+        types.InlineKeyboardButton("تغییر استان", callback_data="edit:prov"),
+        types.InlineKeyboardButton("تغییر شهر", callback_data="edit:city")
+    )
+    kb.add(types.InlineKeyboardButton("📸 افزودن عکس (رایگان)", callback_data="photo:ask"))
+    kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="menu:profile"))
+
+    bot.answer_callback_query(c.id)
+    bot.send_message(cid, "✏️ ویرایش پروفایل:", reply_markup=kb)
         elif d == "settings:main": bot.send_message(cid, "⚙️ تنظیمات:", reply_markup=settings_main_kb())
         elif d == "set:privacy":
             u = get_user(uid); pv = "✅" if u["profile_visible"] else "❌"; als = "✅" if u.get("alarm_seen") else "❌"; sil = "✅" if u.get("silent_until") and u["silent_until"].timestamp() > time.time() else "❌"
