@@ -377,4 +377,61 @@ def c_cb(c):
         elif d == "set:silent":
             kb = types.InlineKeyboardMarkup()
             kb.row(types.InlineKeyboardButton("۱ ساعت", callback_data="sil:1h"), types.InlineKeyboardButton("۲۴ ساعت", callback_data="sil:24h"))
-            kb.row(types.Inli
+            kb.row(types.InlineKeyboardButton("دائم", callback_data="sil:forever"), types.InlineKeyboardButton("❌ غیرفعال", callback_data="sil:off"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="set:privacy"))
+            bot.edit_message_text("🔕 حالت سایلنت:", chat_id=cid, message_id=mid, reply_markup=kb)
+        elif d == "set:loc": bot.send_message(cid, "📍 موقعیت جدید خود را ارسال کنید:", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton("📍 ارسال موقعیت", request_location=True)))
+        elif d == "set:del":
+            kb = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("💳 ۲۰۰,۰۰۰ تومان", callback_data="del:toman"), types.InlineKeyboardButton("⭐ ۲۵ ستاره", callback_data="del:star")).add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("🗑 حذف حساب:\n(درگاه تومان به زودی)", chat_id=cid, message_id=mid, reply_markup=kb)
+        elif d == "del:star":
+            u = get_user(uid)
+            if u["stars"] >= 25:
+                conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET stars = stars - 25 WHERE user_id=%s", (uid,)); conn.commit()
+                for tbl, cl1, cl2 in [("likes","user_id","target_id"),("passes","user_id","target_id"),("blocks","user_id","blocked_id"),("chats","user1","user2"),("contacts","user_id","contact_id"),("direct_requests","sender_id","receiver_id")]: cur.execute(f"DELETE FROM {tbl} WHERE {cl1}=%s OR {cl2}=%s", (uid, uid))
+                cur.execute("DELETE FROM users WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+                bot.send_message(cid, "حساب حذف شد.", reply_markup=types.ReplyKeyboardRemove())
+            else: bot.answer_callback_query(c.id, "❌ ۲۵ ستاره ندارید.", show_alert=True)
+        elif d == "del:toman": bot.answer_callback_query(c.id, "به زودی.", show_alert=True)
+        elif d == "pv:profile": conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET profile_visible = NOT profile_visible WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close(); bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "pv:alarm": conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET alarm_seen = NOT alarm_seen WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close(); bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:gender":
+            u = get_user(uid); curr = u["req_gender"]; new_g = "دختر" if curr=="any" else ("پسر" if curr=="دختر" else "any")
+            conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET req_gender=%s WHERE user_id=%s", (new_g, uid)); conn.commit(); cur.close(); conn.close(); bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:prov": conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET req_province = NOT req_province WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close(); bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:city": conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET req_city = NOT req_city WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close(); bot.answer_callback_query(c.id, "تغییر کرد.")
+        elif d == "filt:minage": states[uid] = {"step": "filt_min_age"}; bot.send_message(cid, "حداقل سن:")
+        elif d == "filt:maxage": states[uid] = {"step": "filt_max_age"}; bot.send_message(cid, "حداکثر سن:")
+        elif d.startswith("sil:"):
+            val = d.split(":")[1]; conn = db(); cur = conn.cursor()
+            if val == "1h": cur.execute("UPDATE users SET silent_until = CURRENT_TIMESTAMP + interval '1 hour' WHERE user_id=%s", (uid,))
+            elif val == "24h": cur.execute("UPDATE users SET silent_until = CURRENT_TIMESTAMP + interval '1 day' WHERE user_id=%s", (uid,))
+            elif val == "forever": cur.execute("UPDATE users SET silent_until = '2099-01-01' WHERE user_id=%s", (uid,))
+            elif val == "off": cur.execute("UPDATE users SET silent_until = NULL WHERE user_id=%s", (uid,))
+            conn.commit(); cur.close(); conn.close(); bot.answer_callback_query(c.id, "اعمال شد.")
+        elif d == "edit:age":
+            u = get_user(uid)
+            if u["stars"] >= 100:
+                conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET stars = stars - 100 WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+                states[uid] = {"step": "edit_age"}; bot.send_message(cid, "✅ ۱۰۰ سکه کسر شد. سن جدید:", reply_markup=age_kb("edit_age_do"))
+                if ADMIN_ID: 
+                    try: bot.send_message(ADMIN_ID, f"🚨 کاربر {uid} درخواست تغییر سن داد.")
+                    except: pass
+            else: bot.answer_callback_query(c.id, "❌ ۱۰۰ سکه ندارید.", show_alert=True)
+        elif d == "edit:gender":
+            u = get_user(uid)
+            if u["stars"] >= 100:
+                conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET stars = stars - 100 WHERE user_id=%s", (uid,)); conn.commit(); cur.close(); conn.close()
+                kb = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("پسر", callback_data="edit_gen_do:پسر"), types.InlineKeyboardButton("دختر", callback_data="edit_gen_do:دختر"))
+                bot.send_message(cid, "✅ ۱۰۰ سکه کسر شد. جنسیت جدید:", reply_markup=kb)
+                if ADMIN_ID:
+                    try: bot.send_message(ADMIN_ID, f"🚨 کاربر {uid} درخواست تغییر جنسیت داد.")
+                    except: pass
+            else: bot.answer_callback_query(c.id, "❌ ۱۰۰ سکه ندارید.", show_alert=True)
+        elif d.startswith("edit_age_do:"):
+            val = int(d.split(":")[1]); conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET age=%s WHERE user_id=%s", (val, uid)); conn.commit(); cur.close(); conn.close(); states.pop(uid, None); bot.edit_message_text(f"✅ سن به {val} تغییر کرد.", chat_id=cid, message_id=mid)
+        elif d.startswith("edit_gen_do:"):
+            val = d.split(":")[1]; conn = db(); cur = conn.cursor(); cur.execute("UPDATE users SET gender=%s WHERE user_id=%s", (val, uid)); conn.commit(); cur.close(); conn.close(); bot.edit_message_text(f"✅ جنسیت به {val} تغییر کرد.", chat_id=cid, message_id=mid)
+        elif d == "edit:prov": states[uid] = {"step": "edit_province"}; bot.send_message(cid, "استان جدید:")
+        elif d == "edit:city": states[uid] = {"step": "edit_city"}; bot.send_message(cid, "شهر جدید:")
+        elif d == "photo:ask": states[uid] = {"step": "photo"}; bot.send_message(cid, "📸 عکس جدید (
