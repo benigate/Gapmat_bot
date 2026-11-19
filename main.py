@@ -308,18 +308,30 @@ def c_cb(c):
     except: pass
 
 @app.route("/")
-def health(): return "OK", 200
+def health()
 
 def run():
     init_db()
-    try: bot.delete_webhook(drop_pending_updates=True)
-    except: pass
-while True:
+
     try:
-        bot.infinity_polling(timeout=30, long_polling_timeout=25)
+        bot.delete_webhook(drop_pending_updates=True)
     except Exception as e:
-        print(f"Polling error: {e}", flush=True)
-        time.sleep(5)
+        print(f"Webhook error: {e}", flush=True)
+
+    while True:
+        try:
+            bot.infinity_polling(
+                timeout=30,
+                long_polling_timeout=25
+            )
+        except Exception as e:
+            print(f"Polling error: {e}", flush=True)
+            time.sleep(5)
+
+
 if __name__ == "__main__":
     threading.Thread(target=run, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 10000))
+    )
