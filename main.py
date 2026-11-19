@@ -308,8 +308,8 @@ def c_cb(c):
     except: pass
 
 @app.route("/")
-def health()
-
+def health():
+    return "OK", 200
 def run():
     init_db()
 
