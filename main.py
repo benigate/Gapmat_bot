@@ -519,8 +519,8 @@ def c_loc(m):
     uid = m.from_user.id
     if not is_reg(uid):
         return
-    conn = db()
-    cur = conn.cursor()
+            conn = db()
+            cur = conn.cursor()
     try:
         cur.execute("UPDATE users SET lat=%s, lon=%s WHERE user_id=%s", (m.location.latitude, m.location.longitude, uid))
         conn.commit()
