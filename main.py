@@ -596,4 +596,471 @@ def c_text(m):
             s["step"] = "bio"
             bot.send_message(m.chat.id, "بیو:")
             return
-        if st == 
+        
+if st == "report_reason":
+            tid = s.get("tid")
+            states.pop(uid, None)
+            if not tid:
+                return
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("INSERT INTO reports (reporter_id, target_id, reason) VALUES (%s,%s,%s)", (uid, tid, t[:500]))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            bot.send_message(m.chat.id, "✅ گزارش شما ثبت شد. بررسی می‌شود.")
+            if ADMIN_ID:
+                try:
+                    reporter = get_user(uid)
+                    target = get_user(tid)
+                    bot.send_message(ADMIN_ID, f"⚠️ گزارش جدید\n\nگزارش‌دهنده: {account_label(reporter)}\nگزارش‌شده: {account_label(target)}\nدلیل: {t[:500]}")
+                except Exception:
+                    logger.exception("Report notification to admin failed")
+            return
+        if st == "edit_province":
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET province=%s WHERE user_id=%s", (t[:50], uid))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            states.pop(uid, None)
+            bot.send_message(m.chat.id, "✅ استان تغییر کرد.")
+            return
+        if st == "edit_city":
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET city=%s WHERE user_id=%s", (t[:50], uid))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            states.pop(uid, None)
+            bot.send_message(m.chat.id, "✅ شهر تغییر کرد.")
+            return
+        if st in ["filt_min_age", "filt_max_age"]:
+            try:
+                val = int(t)
+            except ValueError:
+                bot.send_message(m.chat.id, "❌ سن باید عدد باشد. دوباره بفرستید:")
+                return
+            if val < 18 or val > 99:
+                bot.send_message(m.chat.id, "❌ سن باید بین ۱۸ تا ۹۹ باشد. دوباره بفرستید:")
+                return
+            me = get_user(uid)
+            if st == "filt_min_age" and me and me.get("req_max_age") is not None and val > me["req_max_age"]:
+                bot.send_message(m.chat.id, "❌ حداقل سن نمی‌تواند بیشتر از حداکثر سن باشد. دوباره بفرستید:")
+                return
+            if st == "filt_max_age" and me and me.get("req_min_age") is not None and val < me["req_min_age"]:
+                bot.send_message(m.chat.id, "❌ حداکثر سن نمی‌تواند کمتر از حداقل سن باشد. دوباره بفرستید:")
+                return
+            field = "req_min_age" if st == "filt_min_age" else "req_max_age"
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute(f"UPDATE users SET {field}=%s WHERE user_id=%s", (val, uid))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            states.pop(uid, None)
+            bot.send_message(m.chat.id, f"✅ {'حداقل' if st == 'filt_min_age' else 'حداکثر'} سن به {val} تغییر کرد.")
+            return
+    if relay(m):
+        return
+    if t == "🔍 جستجوی افراد":
+        find(m.chat.id, uid)
+    elif t == "👥 مخاطبین من":
+        show_contacts(m.chat.id, uid)
+    elif t == "👤 پروفایل من":
+        show_profile(m.chat.id, uid)
+    elif t == "🪙 کیف پول":
+        u = get_user(uid)
+        stars = u["stars"] if u else 0
+        bot.send_message(m.chat.id, "💰 شما " + str(stars) + " سکه دارید.", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🛒 خرید سکه (به زودی)", callback_data="buy:coins")))
+    elif t == "🔗 دعوت دوستان":
+        try:
+            bot.send_message(m.chat.id, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
+        except Exception:
+            logger.exception("Invite link failed")
+    else:
+        bot.send_message(m.chat.id, "متوجه نشدم! از منو استفاده کن.", reply_markup=main_menu_kb())
+
+
+@bot.callback_query_handler(func=lambda c: True)
+def c_cb(c):
+    d = c.data or ""
+    uid = c.from_user.id
+    cid = c.message.chat.id if c.message else uid
+    mid = c.message.message_id if c.message else None
+    try:
+        if d.startswith("reg_age:"):
+            age = int(d.split(":")[1])
+            if uid not in states:
+                states[uid] = {}
+            states[uid]["age"] = age
+            states[uid]["step"] = "gender"
+            bot.edit_message_text(f"سن: {age}. جنسیت:", chat_id=cid, message_id=mid, reply_markup=types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("پسر", callback_data="reg_gen:پسر"), types.InlineKeyboardButton("دختر", callback_data="reg_gen:دختر")))
+        elif d.startswith("reg_gen:"):
+            if uid not in states:
+                states[uid] = {}
+            states[uid]["gender"] = d.split(":")[1]
+            states[uid]["step"] = "province"
+            bot.edit_message_text("استان:", chat_id=cid, message_id=mid)
+        elif d.startswith("like:"):
+            like(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("pass:"):
+            pass_user(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("add:"):
+            add_contact(uid, int(d.split(":")[1]), cid)
+        elif d.startswith("view:"):
+            show_profile(cid, uid, target_id=int(d.split(":")[1]))
+        elif d.startswith("dir:"):
+            process_req(uid, int(d.split(":")[1]), cid, "direct")
+        elif d.startswith("req:"):
+            process_req(uid, int(d.split(":")[1]), cid, "chat")
+        elif d.startswith("block:"):
+            block_user(uid, int(d.split(":")[1]), cid)
+            safe_answer(c.id)
+        elif d.startswith("report:"):
+            tid = int(d.split(":")[1])
+            states[uid] = {"step": "report_reason", "tid": tid}
+            safe_answer(c.id)
+            bot.send_message(cid, "⚠️ دلیل گزارش را بنویسید:")
+        elif d.startswith("appr:") or d.startswith("rej:"):
+            is_approve = d.startswith("appr:")
+            try:
+                request_id = int(d.split(":")[1])
+            except ValueError:
+                safe_answer(c.id, "درخواست نامعتبر است.", show_alert=True)
+                return
+            conn = None
+            cur = None
+            try:
+                conn = db()
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE direct_requests
+                    SET status = 'expired'
+                    WHERE id = %s
+                      AND status = 'pending'
+                      AND expires_at IS NOT NULL
+                      AND expires_at <= CURRENT_TIMESTAMP
+                """, (request_id,))
+                if cur.rowcount:
+                    conn.commit()
+                    safe_answer(c.id, "⏰ مهلت درخواست تمام شده.", show_alert=True)
+                    return
+                cur.execute("SELECT * FROM direct_requests WHERE id = %s FOR UPDATE", (request_id,))
+                req = cur.fetchone()
+                if not req:
+                    safe_answer(c.id, "درخواست پیدا نشد.", show_alert=True)
+                    return
+                if req["receiver_id"] != uid:
+                    safe_answer(c.id, "این درخواست برای شما نیست.", show_alert=True)
+                    return
+                if req["status"] != "pending":
+                    safe_answer(c.id, "این درخواست قبلاً بررسی شده.", show_alert=True)
+                    return
+                if is_approve:
+                    cur.execute("""
+                        UPDATE direct_requests
+                        SET status = 'accepted'
+                        WHERE id = %s
+                          AND status = 'pending'
+                          AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                    """, (request_id,))
+                    if cur.rowcount:
+                        sender = req["sender_id"]
+                        cur.execute("""
+                            INSERT INTO chats (user1, user2, active)
+                            VALUES (%s, %s, TRUE)
+                            ON CONFLICT (user1, user2)
+                            DO UPDATE SET active = TRUE
+                        """, (min(sender, uid), max(sender, uid)))
+                        conn.commit()
+                        try:
+                            bot.send_message(sender, "✅ درخواست چت پذیرفته شد.")
+                        except Exception:
+                            pass
+                        bot.send_message(uid, "✅ درخواست را پذیرفتید.")
+                        safe_answer(c.id, "پذیرفته شد.")
+                    else:
+                        conn.commit()
+                        safe_answer(c.id, "درخواست منقضی شده.", show_alert=True)
+                else:
+                    cur.execute("""
+                        UPDATE direct_requests
+                        SET status = 'rejected'
+                        WHERE id = %s
+                          AND status = 'pending'
+                          AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                    """, (request_id,))
+                    if cur.rowcount:
+                        conn.commit()
+                        try:
+                            bot.send_message(req["sender_id"], "❌ درخواست چت رد شد.")
+                        except Exception:
+                            pass
+                        safe_answer(c.id, "رد شد.")
+                    else:
+                        conn.commit()
+                        safe_answer(c.id, "درخواست منقضی شده.", show_alert=True)
+            except Exception:
+                if conn:
+                    conn.rollback()
+                logger.exception("Request processing error")
+                safe_answer(c.id, "خطا در پردازش درخواست.", show_alert=True)
+            finally:
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+        elif d == "edit:menu":
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton(f"تغییر سن ({EDIT_COST} سکه)", callback_data="edit:age"), types.InlineKeyboardButton(f"تغییر جنسیت ({EDIT_COST} سکه)", callback_data="edit:gender"))
+            kb.row(types.InlineKeyboardButton("تغییر استان", callback_data="edit:prov"), types.InlineKeyboardButton("تغییر شهر", callback_data="edit:city"))
+            kb.add(types.InlineKeyboardButton("📸 افزودن عکس (رایگان)", callback_data="photo:ask"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="menu:profile"))
+            safe_answer(c.id)
+            bot.send_message(cid, "✏️ ویرایش پروفایل:", reply_markup=kb)
+        elif d == "menu:profile":
+            safe_answer(c.id)
+            show_profile(cid, uid)
+        elif d == "settings:main":
+            bot.send_message(cid, "⚙️ تنظیمات:", reply_markup=settings_main_kb())
+        elif d == "set:privacy":
+            u = get_user(uid)
+            pv = "✅" if u["profile_visible"] else "❌"
+            als = "✅" if u.get("alarm_seen") else "❌"
+            sil = "✅" if is_silent(u) else "❌"
+            kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(f"{pv} نمایش پروفایل", callback_data="pv:profile")).add(types.InlineKeyboardButton(f"{als} آلارم بازدید", callback_data="pv:alarm")).add(types.InlineKeyboardButton("📩 فیلتر درخواست‌ها", callback_data="set:filter")).add(types.InlineKeyboardButton(f"{sil} حالت سایلنت", callback_data="set:silent")).add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("👤 حریم خصوصی:", chat_id=cid, message_id=mid, reply_markup=kb)
+        elif d == "set:filter":
+            u = get_user(uid)
+            g = "همه" if u['req_gender'] == "any" else u['req_gender']
+            p = "✅" if u['req_province'] else "❌"
+            cc = "✅" if u['req_city'] else "❌"
+            kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(f"جنسیت: {g}", callback_data="filt:gender")).row(types.InlineKeyboardButton(f"{p} هم‌استانی", callback_data="filt:prov"), types.InlineKeyboardButton(f"{cc} هم‌شهری", callback_data="filt:city")).row(types.InlineKeyboardButton(f"حداقل سن: {u['req_min_age']}", callback_data="filt:minage"), types.InlineKeyboardButton(f"حداکثر سن: {u['req_max_age']}", callback_data="filt:maxage")).add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="set:privacy"))
+            bot.edit_message_text("📩 فیلترها:", chat_id=cid, message_id=mid, reply_markup=kb)
+        elif d == "set:silent":
+            kb = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("۱ ساعت", callback_data="sil:1h"), types.InlineKeyboardButton("۲۴ ساعت", callback_data="sil:24h")).row(types.InlineKeyboardButton("دائم", callback_data="sil:forever"), types.InlineKeyboardButton("❌ غیرفعال", callback_data="sil:off")).add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="set:privacy"))
+            bot.edit_message_text("🔕 سایلنت:", chat_id=cid, message_id=mid, reply_markup=kb)
+        elif d == "set:loc":
+            bot.send_message(cid, "📍 موقعیت جدید:", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton("📍 ارسال موقعیت", request_location=True)))
+        elif d == "set:del":
+            kb = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("💳 ۲۰۰,۰۰۰ تومان", callback_data="del:toman"), types.InlineKeyboardButton("⭐ ۲۵ ستاره", callback_data="del:star")).add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="settings:main"))
+            bot.edit_message_text("🗑 حذف حساب:\n(درگاه تومان به زودی)", chat_id=cid, message_id=mid, reply_markup=kb)
+        elif d == "del:star":
+            u = get_user(uid)
+            if u and u["stars"] >= DELETE_COST:
+                kb = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("✅ بله، حذف کن", callback_data="del:confirm"), types.InlineKeyboardButton("❌ لغو", callback_data="del:cancel"))
+                safe_answer(c.id)
+                bot.send_message(cid, f"⚠️ حذف حساب قطعی است و قابل برگشت نیست.\n{DELETE_COST} سکه لازم است. مطمئن هستید؟", reply_markup=kb)
+            else:
+                safe_answer(c.id, "❌ ۲۵ ستاره ندارید.", show_alert=True)
+        elif d == "del:confirm":
+            u = get_user(uid)
+            if not u or u["stars"] < DELETE_COST:
+                safe_answer(c.id, "❌ ۲۵ ستاره ندارید.", show_alert=True)
+                return
+            safe_answer(c.id)
+            delete_account(uid, cid)
+        elif d == "del:cancel":
+            safe_answer(c.id, "لغو شد.")
+        elif d == "del:toman":
+            safe_answer(c.id, "به زودی.", show_alert=True)
+        elif d == "pv:profile":
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET profile_visible = NOT profile_visible WHERE user_id=%s", (uid,))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            safe_answer(c.id, "تغییر کرد.")
+        elif d == "pv:alarm":
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET alarm_seen = NOT alarm_seen WHERE user_id=%s", (uid,))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            safe_answer(c.id, "تغییر کرد.")
+        elif d == "filt:gender":
+            u = get_user(uid)
+            curr = u["req_gender"]
+            new_g = "دختر" if curr == "any" else ("پسر" if curr == "دختر" else "any")
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET req_gender=%s WHERE user_id=%s", (new_g, uid))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            safe_answer(c.id, "تغییر کرد.")
+        elif d == "filt:prov":
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET req_province = NOT req_province WHERE user_id=%s", (uid,))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            safe_answer(c.id, "تغییر کرد.")
+        elif d == "filt:city":
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET req_city = NOT req_city WHERE user_id=%s", (uid,))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            safe_answer(c.id, "تغییر کرد.")
+        elif d == "filt:minage":
+            states[uid] = {"step": "filt_min_age"}
+            bot.send_message(cid, "حداقل سن:")
+        elif d == "filt:maxage":
+            states[uid] = {"step": "filt_max_age"}
+            bot.send_message(cid, "حداکثر سن:")
+        elif d.startswith("sil:"):
+            val = d.split(":")[1]
+            conn = db()
+            cur = conn.cursor()
+            try:
+                if val == "1h":
+                    cur.execute("UPDATE users SET silent_until = CURRENT_TIMESTAMP + interval '1 hour' WHERE user_id=%s", (uid,))
+                elif val == "24h":
+                    cur.execute("UPDATE users SET silent_until = CURRENT_TIMESTAMP + interval '1 day' WHERE user_id=%s", (uid,))
+                elif val == "forever":
+                    cur.execute("UPDATE users SET silent_until = '2099-01-01' WHERE user_id=%s", (uid,))
+                elif val == "off":
+                    cur.execute("UPDATE users SET silent_until = NULL WHERE user_id=%s", (uid,))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            safe_answer(c.id, "اعمال شد.")
+        elif d == "edit:age":
+            u = get_user(uid)
+            if u and u["stars"] >= EDIT_COST:
+                conn = db()
+                cur = conn.cursor()
+                try:
+                    cur.execute("UPDATE users SET stars = stars - %s WHERE user_id=%s", (EDIT_COST, uid))
+                    conn.commit()
+                finally:
+                    cur.close()
+                    conn.close()
+                bot.send_message(cid, "✅ ۱۰۰ سکه کسر شد. سن جدید:", reply_markup=age_kb("edit_age_do"))
+            else:
+                safe_answer(c.id, "❌ ۱۰۰ سکه ندارید.", show_alert=True)
+        elif d == "edit:gender":
+            u = get_user(uid)
+            if u and u["stars"] >= EDIT_COST:
+                conn = db()
+                cur = conn.cursor()
+                try:
+                    cur.execute("UPDATE users SET stars = stars - %s WHERE user_id=%s", (EDIT_COST, uid))
+                    conn.commit()
+                finally:
+                    cur.close()
+                    conn.close()
+                kb = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("پسر", callback_data="edit_gen_do:پسر"), types.InlineKeyboardButton("دختر", callback_data="edit_gen_do:دختر"))
+                bot.send_message(cid, "✅ ۱۰۰ سکه کسر شد. جنسیت:", reply_markup=kb)
+            else:
+                safe_answer(c.id, "❌ ۱۰۰ سکه ندارید.", show_alert=True)
+        elif d.startswith("edit_age_do:"):
+            val = int(d.split(":")[1])
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET age=%s WHERE user_id=%s", (val, uid))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            states.pop(uid, None)
+            bot.edit_message_text(f"✅ سن به {val} تغییر کرد.", chat_id=cid, message_id=mid)
+        elif d.startswith("edit_gen_do:"):
+            val = d.split(":")[1]
+            conn = db()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET gender=%s WHERE user_id=%s", (val, uid))
+                conn.commit()
+            finally:
+                cur.close()
+                conn.close()
+            bot.edit_message_text(f"✅ جنسیت به {val} تغییر کرد.", chat_id=cid, message_id=mid)
+        elif d == "edit:prov":
+            states[uid] = {"step": "edit_province"}
+            bot.send_message(cid, "استان جدید:")
+        elif d == "edit:city":
+            states[uid] = {"step": "edit_city"}
+            bot.send_message(cid, "شهر جدید:")
+        elif d == "photo:ask":
+            states[uid] = {"step": "photo"}
+            bot.send_message(cid, "📸 عکس بفرست (تا ۳ عکس):")
+        elif d == "buy:coins":
+            safe_answer(c.id, "🛒 خرید سکه به‌زودی فعال می‌شود.", show_alert=True)
+        elif d == "noop":
+            safe_answer(c.id, "به‌زودی فعال می‌شود.", show_alert=True)
+        else:
+            safe_answer(c.id)
+    except Exception:
+        logger.exception("Callback error")
+        safe_answer(c.id, "خطا رخ داد.", show_alert=True)
+
+
+@app.route("/")
+def health():
+    return "OK", 200
+
+
+def expire_loop():
+    while True:
+        try:
+            expire_requests()
+        except Exception:
+            logger.exception("Expire requests loop failed")
+        time.sleep(60)
+
+
+def run():
+    init_db()
+    threading.Thread(target=expire_loop, daemon=True).start()
+
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        print(f"Webhook error: {e}", flush=True)
+
+    while True:
+        try:
+            bot.infinity_polling(
+                timeout=30,
+                long_polling_timeout=25
+            )
+        except Exception as e:
+            print(f"Polling error: {e}", flush=True)
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    threading.Thread(target=run, daemon=True).start()
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 10000))
+    )
