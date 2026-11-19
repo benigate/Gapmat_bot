@@ -242,8 +242,8 @@ def c_cb(c):
         elif d.startswith("add:"): add_contact(uid, int(d.split(":")[1]), cid)
         elif d.startswith("view:"): show_profile(cid, uid, target_id=int(d.split(":")[1]))
         elif d.startswith("dir:"): process_req(uid, int(d.split(":")[1]), cid, "direct")
-        elif d.startswith("req:"): process_req(uid, int(d.split(":")[1]), cid, "chat")
-                elif d.startswith("appr:") or d.startswith("rej:"):
+        elif d.startswith("req:"): process_req(uid, int(d.split(":")[1]), cid, "chat")  
+        elif d.startswith("appr:") or d.startswith("rej:"):
             conn = None
             cur = None
 
