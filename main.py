@@ -314,10 +314,12 @@ def run():
     init_db()
     try: bot.delete_webhook(drop_pending_updates=True)
     except: pass
-    while True:
-        try: bot.infinity_polling(timeout=30, long_polling_timeout=25)
-        except: time.sleep(5)
-
+while True:
+    try:
+        bot.infinity_polling(timeout=30, long_polling_timeout=25)
+    except Exception as e:
+        print(f"Polling error: {e}", flush=True)
+        time.sleep(5)
 if __name__ == "__main__":
     threading.Thread(target=run, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
