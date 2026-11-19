@@ -255,14 +255,6 @@ def c_cb(c):
 
             bot.answer_callback_query(c.id)
             bot.send_message(cid, "✏️ ویرایش پروفایل:", reply_markup=kb)
-    )
-    kb.row(
-        types.InlineKeyboardButton("تغییر استان", callback_data="edit:prov"),
-        types.InlineKeyboardButton("تغییر شهر", callback_data="edit:city")
-    )
-    kb.add(types.InlineKeyboardButton("📸 افزودن عکس (رایگان)", callback_data="photo:ask"))
-    kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="menu:profile"))
-
     bot.answer_callback_query(c.id)
     bot.send_message(cid, "✏️ ویرایش پروفایل:", reply_markup=kb)
         elif d == "settings:main": bot.send_message(cid, "⚙️ تنظیمات:", reply_markup=settings_main_kb())
