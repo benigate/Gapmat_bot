@@ -221,8 +221,10 @@ def c_text(m):
     elif t == "👤 پروفایل من": show_profile(m.chat.id, uid)
     elif t == "🪙 کیف پول": u = get_user(uid); bot.send_message(m.chat.id, "💰 شما " + str(u['stars']) + " سکه دارید.", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🛒 خرید سکه (به زودی)", callback_data="noop")))
     elif t == "🔗 دعوت دوستان": 
-        try: bot.send_message(m.chat.id, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
-            except Exception as e:
+                try:
+            bot.send_message(m.chat.id, f"https://t.me/{bot.get_me().username}?start=ref_{uid}")
+        except Exception:
+            pass
         logging.exception("Callback error")
     else: bot.send_message(m.chat.id, "متوجه نشدم! از منو استفاده کن.", reply_markup=main_menu_kb())
 
