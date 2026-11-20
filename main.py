@@ -300,11 +300,7 @@ def start_chat(uid, tid):
     """, (uid, tid), fetchone=True)
     return bool(row)
 
-
-
-def start_chat(uid, tid):
-    if is_blocked_between(uid, tid):
-        return False
+    
 
     user1, user2 = sorted((uid, tid))
 
