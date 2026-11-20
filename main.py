@@ -92,7 +92,8 @@ def settings_main_kb():
 
 def age_kb(prefix):
     kb = types.InlineKeyboardMarkup(row_width=5)
-    btns = [types.InlineKeyboardButton(str(i), callback_data=f"{prefix}:{i}") for i in range(18, 81)]def finish_reg(uid, cid):
+    btns = [types.InlineKeyboardButton(str(i), callback_data=f"{prefix}:{i}") for i in range(18, 81)]
+    def finish_reg(uid, cid):
     d = states.pop(uid, None)
     if not d:
         return
