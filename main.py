@@ -756,11 +756,23 @@ def expire_loop():
 def run():
     init_db()
     threading.Thread(target=expire_loop, daemon=True).start()
-    try:
-        bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
-    except Exception:
-        logger.exception("polling stopped")
-        raise
+
+    port = int(os.environ.get("PORT", 10000))
+
+    threading.Thread(
+        target=lambda: app.run(
+            host="0.0.0.0",
+            port=port,
+            use_reloader=False
+        ),
+        daemon=True
+    ).start()
+
+    bot.infinity_polling(
+        skip_pending=True,
+        timeout=30,
+        long_polling_timeout=30
+    )
 
 
 if __name__ == "__main__":
