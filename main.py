@@ -71,20 +71,23 @@ def account_label(uid):
     return u.get("nickname") or str(uid)
 
 
+
 def q(sql, params=(), fetchone=False, fetchall=False, commit=True):
-    """Small DB helper; db is expected to be a psycopg2 connection."""
-    cur = db.cursor()
+    conn = db()
+    cur = conn.cursor()
     try:
         cur.execute(sql, params)
         result = cur.fetchone() if fetchone else (cur.fetchall() if fetchall else None)
         if commit:
-            db.commit()
+            conn.commit()
         return result
     except Exception:
-        db.rollback()
+        conn.rollback()
         raise
     finally:
         cur.close()
+        conn.close()
+
 
 
 def user_exists(uid):
