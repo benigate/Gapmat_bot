@@ -301,19 +301,23 @@ def start_chat(uid, tid):
     return bool(row)
 
 
-def stop_chat(uid):
-    q("UPDATE chats SET active=FALSE WHERE active=TRUE AND (user1_id=%s OR user2_id=%s)", (uid, uid))
 
-
-def relay(message):
-    uid = message.from_user.id
-    row = q("""
-        SELECT CASE WHEN user1_id=%s THEN user2_id ELSE user1_id END
-        FROM chats WHERE active=TRUE AND (user1_id=%s OR user2_id=%s)
-        ORDER BY id DESC LIMIT 1
-    """, (uid, uid, uid), fetchone=True)
-    if not row:
+def start_chat(uid, tid):
+    if is_blocked_between(uid, tid):
         return False
+
+    user1, user2 = sorted((uid, tid))
+
+    row = q("""
+        INSERT INTO chats(user1, user2, active, created_at)
+        VALUES(%s, %s, TRUE, NOW())
+        ON CONFLICT (user1, user2)
+        DO UPDATE SET active = TRUE
+        RETURNING user1
+    """, (user1, user2), fetchone=True)
+
+    return bool(row)
+    
     try:
         bot.copy_message(int(row[0]), message.chat.id, message.message_id)
         return True
