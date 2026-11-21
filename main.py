@@ -294,10 +294,17 @@ def block_user(uid, tid, cid):
 def start_chat(uid, tid):
     if is_blocked_between(uid, tid):
         return False
+
+    user1, user2 = sorted((uid, tid))
+
     row = q("""
-        INSERT INTO chats(user1_id,user2_id,active,created_at)
-        VALUES(%s,%s,TRUE,NOW()) RETURNING id
-    """, (uid, tid), fetchone=True)
+        INSERT INTO chats(user1, user2, active, created_at)
+        VALUES(%s, %s, TRUE, NOW())
+        ON CONFLICT (user1, user2)
+        DO UPDATE SET active = TRUE
+        RETURNING user1
+    """, (user1, user2), fetchone=True)
+
     return bool(row)
 
     
