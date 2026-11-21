@@ -306,20 +306,6 @@ def start_chat(uid, tid):
     """, (user1, user2), fetchone=True)
 
     return bool(row)
-
-    
-
-    user1, user2 = sorted((uid, tid))
-
-    row = q("""
-        INSERT INTO chats(user1, user2, active, created_at)
-        VALUES(%s, %s, TRUE, NOW())
-        ON CONFLICT (user1, user2)
-        DO UPDATE SET active = TRUE
-        RETURNING user1
-    """, (user1, user2), fetchone=True)
-
-    return bool(row)
     
     try:
         bot.copy_message(int(row[0]), message.chat.id, message.message_id)
